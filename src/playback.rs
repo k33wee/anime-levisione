@@ -1,20 +1,21 @@
+#[cfg(unix)]
+use crate::store::Progress;
 use crate::{
     events::Message,
     model::{Anime, Episode},
     provider::{Stream, http::USER_AGENT},
-    store::{Config, Progress},
+    store::Config,
 };
 use anyhow::{Context, Result, bail};
+#[cfg(unix)]
+use std::time::Duration;
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
-    time::Duration,
 };
-use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, BufReader},
-    process::Command,
-    sync::mpsc,
-};
+#[cfg(unix)]
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::{io::AsyncRead, process::Command, sync::mpsc};
 
 #[derive(Clone)]
 pub enum Media {
