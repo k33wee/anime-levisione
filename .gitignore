@@ -1,0 +1,4 @@
+/target/
+/.pi/
+*.part.mkv
+.DS_Store
