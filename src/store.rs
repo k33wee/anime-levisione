@@ -31,6 +31,10 @@ pub struct Config {
     /// stops answering. Full `https://host` URLs.
     #[serde(default)]
     pub streamingcommunity_domains: Vec<String>,
+    /// AniList OAuth client id from https://anilist.co/settings/developer.
+    /// 0 (unset) disables the guided login; metadata still works anonymously.
+    #[serde(default)]
+    pub anilist_client_id: u32,
     pub private: bool,
 }
 impl Default for Config {
@@ -48,6 +52,7 @@ impl Default for Config {
             animeunity_domains: vec![],
             streamingcommunity_url: "https://streamingcommunityz.build".into(),
             streamingcommunity_domains: vec![],
+            anilist_client_id: 0,
             private: false,
         }
     }

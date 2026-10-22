@@ -1,4 +1,5 @@
 use crate::{
+    anilist::{MediaEntry, TrackEvent},
     events::Message,
     input::Input,
     model::{Anime, Episode, ProviderId, normalize, sort_by_rank},
@@ -86,6 +87,13 @@ pub enum Action {
         anime: Anime,
         episode: Episode,
     },
+    /// Fetch AniList metadata to enrich a title's details.
+    Lookup(Anime),
+    /// Mirror a local watchlist/progress change to the user's AniList list.
+    Track {
+        anime: Anime,
+        event: TrackEvent,
+    },
     Save,
     /// Library save for high-frequency player progress updates; debounced by the
     /// effects layer instead of fsync-ing on every ~2 s report.
@@ -110,6 +118,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("Toggle private mode", "P"),
     ("Settings & paths", ","),
     ("Provider diagnostics", "!"),
+    ("AniList login & sync status", "!"),
     ("Keyboard help & about", "?"),
     ("Stop playback", "Ctrl+x"),
     ("Cancel download", "Ctrl+d"),
@@ -151,6 +160,13 @@ pub struct App {
     pub tick: usize,
     pub search_pending: Option<Instant>,
     detail_pending: Option<Instant>,
+    /// AniList metadata per title key; `None` caches a lookup miss so the
+    /// same title is not searched again while scrolling.
+    pub meta: HashMap<String, Option<MediaEntry>>,
+    pub meta_pending: Option<Instant>,
+    /// AniList account name once logged in; drives sync and UI hints.
+    pub anilist_user: Option<String>,
+    pub anilist_error: Option<String>,
     catalog_view: View,
 }
 impl App {
@@ -190,6 +206,10 @@ impl App {
             tick: 0,
             search_pending: None,
             detail_pending: None,
+            meta: HashMap::new(),
+            meta_pending: None,
+            anilist_user: None,
+            anilist_error: None,
             catalog_view: View::Discover,
         }
     }
@@ -326,7 +346,27 @@ impl App {
         self.detail_pending = self
             .detail_loading
             .then(|| Instant::now() + Duration::from_millis(180));
+        // AniList enrichment trails the selection with its own debounce.
+        self.meta_pending = None;
+        if self.anilist_enabled()
+            && self
+                .selected()
+                .is_some_and(|a| !a.title.trim().is_empty() && !self.meta.contains_key(&a.key()))
+        {
+            self.meta_pending = Some(Instant::now() + Duration::from_millis(450));
+        }
         self.select_resume();
+    }
+    /// AniList is consulted only when it cannot leak anything: never in demo
+    /// or private mode.
+    fn anilist_enabled(&self) -> bool {
+        !self.demo && !self.config.private
+    }
+    fn anilist_track(&self, anime: &Anime, event: TrackEvent) -> Option<Action> {
+        (self.anilist_enabled() && self.anilist_user.is_some()).then(|| Action::Track {
+            anime: anime.clone(),
+            event,
+        })
     }
     fn select_resume(&mut self) {
         let Some(anime) = self.selected() else {
@@ -382,6 +422,15 @@ impl App {
                 }
             }
         }
+        if self.meta_pending.is_some_and(|t| Instant::now() >= t) {
+            self.meta_pending = None;
+            if self.anilist_enabled()
+                && let Some(anime) = self.selected().cloned()
+                && !self.meta.contains_key(&anime.key())
+            {
+                actions.push(Action::Lookup(anime));
+            }
+        }
         actions
     }
     pub fn search_changed(&mut self) {
@@ -409,6 +458,24 @@ impl App {
                 }
                 self.notify(format!("{provider} moved to {url}; retrying"), false);
             }
+            Message::Meta { key, result } => {
+                match result {
+                    Ok(entry) => {
+                        self.anilist_error = None;
+                        self.meta.insert(key, entry);
+                    }
+                    // Errors are cached too, so a failing API is not retried
+                    // on every selection; diagnostics shows the reason.
+                    Err(error) => {
+                        self.anilist_error = Some(error);
+                        self.meta.insert(key, None);
+                    }
+                }
+            }
+            Message::Tracked(result) => match result {
+                Ok(text) => self.notify(text, false),
+                Err(error) => self.notify(error, true),
+            },
             Message::Catalog {
                 generation,
                 provider,
@@ -484,8 +551,27 @@ impl App {
             ),
             Message::Progress { anime, progress } => {
                 if !self.config.private {
-                    self.library.record(anime, progress);
-                    return vec![Action::SaveProgress];
+                    let was_completed = self
+                        .library
+                        .progress(&anime, &progress.episode)
+                        .is_some_and(|p| p.completed);
+                    let key = anime.key();
+                    let total = self
+                        .details
+                        .get(&key)
+                        .map(|(a, _)| a.episodes)
+                        .unwrap_or(anime.episodes);
+                    let completed_now = progress.completed && !was_completed;
+                    let number = progress.episode.number.clone();
+                    self.library.record(anime.clone(), progress);
+                    let mut actions = vec![Action::SaveProgress];
+                    if completed_now
+                        && let Some(track) =
+                            self.anilist_track(&anime, TrackEvent::Watched { number, total })
+                    {
+                        actions.push(track);
+                    }
+                    return actions;
                 }
             }
             Message::PlaybackEnded(result) => {
@@ -722,12 +808,17 @@ impl App {
             }
             K::Char('w') => {
                 if let Some(a) = self.selected().cloned() {
-                    self.library.toggle_bookmark(a);
+                    self.library.toggle_bookmark(a.clone());
+                    let added = self.library.bookmarked(&a);
                     self.notify("Watchlist updated", false);
                     if self.view == View::Watchlist {
                         self.rebuild();
                     }
-                    return vec![Action::Save];
+                    let mut actions = vec![Action::Save];
+                    if let Some(track) = self.anilist_track(&a, TrackEvent::Watchlist { added }) {
+                        actions.push(track);
+                    }
+                    return actions;
                 }
             }
             K::Char('m') => {
@@ -739,7 +830,7 @@ impl App {
                         .progress(&anime, &episode)
                         .is_some_and(|p| p.completed);
                     self.library.record(
-                        anime,
+                        anime.clone(),
                         Progress {
                             episode,
                             seconds: 0.0,
@@ -755,7 +846,27 @@ impl App {
                         },
                         false,
                     );
-                    return vec![Action::Save];
+                    let mut actions = vec![Action::Save];
+                    if completed {
+                        let total = self
+                            .details
+                            .get(&anime.key())
+                            .map(|(a, _)| a.episodes)
+                            .unwrap_or(anime.episodes);
+                        if let Some(track) = self.anilist_track(
+                            &anime,
+                            TrackEvent::Watched {
+                                number: self
+                                    .selected_episode()
+                                    .map(|e| e.number.clone())
+                                    .unwrap_or_default(),
+                                total,
+                            },
+                        ) {
+                            actions.push(track);
+                        }
+                    }
+                    return actions;
                 }
             }
             K::Char('d') => {
@@ -794,6 +905,10 @@ impl App {
             }
             K::Char('P') => {
                 self.config.private = !self.config.private;
+                if self.config.private {
+                    // Nothing leaves the machine in private mode.
+                    self.meta_pending = None;
+                }
                 self.notify(
                     if self.config.private {
                         "Private mode on · playback and searches will not be saved"
@@ -836,6 +951,21 @@ impl App {
             13 => K::Char('?'),
             14 => return self.key(KeyEvent::new(K::Char('x'), M::CONTROL)),
             15 => return self.key(KeyEvent::new(K::Char('d'), M::CONTROL)),
+            16 => {
+                self.notify(
+                    if self.anilist_user.is_some() {
+                        format!(
+                            "AniList: syncing as {} · log out with `anime-levisione logout`",
+                            self.anilist_user.clone().unwrap_or_default()
+                        )
+                    } else {
+                        "AniList: run `anime-levisione login` in your shell to sync your list"
+                            .into()
+                    },
+                    false,
+                );
+                return vec![];
+            }
             _ => K::Char('q'),
         };
         self.key(key.into())
@@ -1103,5 +1233,97 @@ mod tests {
         app.playing = false;
         app.episodes.select(Some(1));
         assert!(app.key(K::Char('n').into()).is_empty(), "last episode");
+    }
+    #[test]
+    fn anilist_tracking_follows_login_and_private_mode() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), false);
+        app.discovered = vec![sample(ProviderId::AnimeUnity, "7")];
+        app.rebuild();
+        app.titles.select(Some(0));
+        // Logged out: purely local watchlist toggle.
+        let actions = app.key(K::Char('w').into());
+        assert!(!actions.iter().any(|a| matches!(a, Action::Track { .. })));
+        app.anilist_user = Some("viewer".into());
+        let actions = app.key(K::Char('w').into());
+        assert!(
+            actions.iter().any(|a| matches!(a, Action::Track { .. })),
+            "logged-in watchlist toggles mirror to AniList"
+        );
+        // Private mode is a hard off switch for anything leaving the machine.
+        app.config.private = true;
+        let actions = app.key(K::Char('w').into());
+        assert!(!actions.iter().any(|a| matches!(a, Action::Track { .. })));
+    }
+    #[test]
+    fn anilist_lookup_debounces_and_caches_misses() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), false);
+        let anime = sample(ProviderId::AnimeUnity, "7");
+        app.details.insert(anime.key(), (anime.clone(), vec![]));
+        app.discovered = vec![anime.clone()];
+        app.rebuild();
+        app.titles.select(Some(0));
+        app.selection_changed();
+        assert!(app.meta_pending.is_some(), "a selection schedules a lookup");
+        assert!(app.on_tick().is_empty(), "before the debounce elapses");
+        app.meta_pending = Some(Instant::now() - Duration::from_secs(1));
+        let actions = app.on_tick();
+        assert!(
+            actions.iter().any(|a| matches!(a, Action::Lookup(_))),
+            "due debounce issues the lookup"
+        );
+        // A cached miss must not re-query while scrolling back to the title.
+        app.message(Message::Meta {
+            key: anime.key(),
+            result: Ok(None),
+        });
+        app.selection_changed();
+        app.meta_pending = Some(Instant::now() - Duration::from_secs(1));
+        assert!(app.on_tick().is_empty(), "cached miss skips the request");
+        // Errors surface for diagnostics without failing the panel.
+        app.message(Message::Meta {
+            key: "AU:other".into(),
+            result: Err("rate limited".into()),
+        });
+        assert_eq!(app.anilist_error.as_deref(), Some("rate limited"));
+    }
+    #[test]
+    fn completed_playback_mirrors_to_anilist_once() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), false);
+        let anime = sample(ProviderId::AnimeUnity, "7");
+        app.anilist_user = Some("viewer".into());
+        app.details.insert(anime.key(), (anime.clone(), vec![]));
+        let episode = Episode {
+            id: "e1".into(),
+            number: "1".into(),
+            title: String::new(),
+        };
+        let progress = |completed| crate::store::Progress {
+            episode: episode.clone(),
+            seconds: 100.0,
+            duration: 100.0,
+            completed,
+        };
+        let actions = app.message(Message::Progress {
+            anime: anime.clone(),
+            progress: progress(true),
+        });
+        assert!(
+            actions.iter().any(|a| matches!(
+                a,
+                Action::Track {
+                    event: TrackEvent::Watched { .. },
+                    ..
+                }
+            )),
+            "first completion syncs to AniList"
+        );
+        let actions = app.message(Message::Progress {
+            anime,
+            progress: progress(true),
+        });
+        assert!(
+            !actions.iter().any(|a| matches!(a, Action::Track { .. })),
+            "repeat reports do not re-sync"
+        );
     }
 }

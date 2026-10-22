@@ -1,4 +1,5 @@
 use crate::{
+    anilist::MediaEntry,
     model::{Anime, Episode, ProviderId},
     store::Progress,
 };
@@ -10,6 +11,13 @@ pub enum Message {
         provider: ProviderId,
         url: String,
     },
+    /// AniList metadata for a title; `None` means no confident match.
+    Meta {
+        key: String,
+        result: Result<Option<MediaEntry>, String>,
+    },
+    /// Outcome of mirroring a watchlist/progress change to AniList.
+    Tracked(Result<String, String>),
     Catalog {
         generation: u64,
         provider: ProviderId,

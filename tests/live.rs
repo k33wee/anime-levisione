@@ -2,7 +2,8 @@
 //! excluded from normal runs: `cargo test -- --ignored`.
 
 use anime_levisione::{
-    model::{Anime, ProviderId},
+    anilist,
+    model::{Anime, Episode, ProviderId},
     provider::{Registry, bounded},
     store::Config,
 };
@@ -19,7 +20,7 @@ async fn first_with_episodes(
     registry: &Registry,
     id: ProviderId,
     query: &str,
-) -> (Anime, Vec<anime_levisione::model::Episode>) {
+) -> (Anime, Vec<Episode>) {
     let results = bounded(registry.get(id).search(query))
         .await
         .expect("search");
@@ -35,6 +36,36 @@ async fn first_with_episodes(
         "no result for {query} yielded episodes: {}",
         errors.join("; ")
     );
+}
+
+#[tokio::test]
+#[ignore = "hits the live AniList API"]
+async fn anilist_lookup_enriches_streaming_titles() {
+    let dir = tempfile::tempdir().expect("dir");
+    let client = anilist::Client::open(dir.path()).expect("client");
+    let results = client.search("frieren").await.expect("search");
+    assert!(!results.is_empty(), "AniList returned nothing");
+    let anime = Anime {
+        provider: ProviderId::AnimeUnity,
+        id: "4851".into(),
+        title: "Frieren: Beyond Journey's End".into(),
+        aliases: vec![],
+        synopsis: String::new(),
+        year: "2023".into(),
+        kind: "TV".into(),
+        status: String::new(),
+        score: String::new(),
+        episodes: 28,
+        dub: false,
+        genres: vec![],
+        page_url: String::new(),
+    };
+    let matched = anilist::match_media(&anime, &results).expect("a confident match");
+    assert_eq!(matched.year(), Some(2023));
+    assert!(!matched.display_score().is_empty());
+    // The full pipeline: streaming title in, metadata out.
+    let found = client.lookup(&anime).await.expect("lookup");
+    assert!(found.is_some(), "lookup matched nothing");
 }
 
 #[tokio::test]

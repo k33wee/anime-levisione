@@ -48,7 +48,8 @@ anime-levisione "frieren"          # open with a search already running
 anime-levisione --demo             # offline preview of the UI (no network, no writes)
 anime-levisione search "naruto"    # scriptable search, ranks both providers
 anime-levisione search "naruto" --json --provider animeunity
-anime-levisione doctor             # check player, ffmpeg, and provider connectivity
+anime-levisione doctor             # check player, ffmpeg, providers, and AniList
+anime-levisione login              # connect AniList for metadata sync
 ```
 
 ### Keyboard-first
@@ -78,6 +79,23 @@ The providers rotate their domains every few weeks (AnimeUnity alone went `anime
 - Requests retry on transient errors and 419 sessions are refreshed automatically; domain rotations are handled as described above.
 - Ranking prefers exact/prefix/title matches, then token and fuzzy similarity; English, Italian, and romaji titles all work (accent-insensitive).
 
+### AniList metadata & tracking
+
+AniList (no video hosting) enriches the details panel and, when you log in, mirrors your local activity outward:
+
+- Selecting a title looks it up on AniList (debounced, cached per title) and shows its score, status, episode count, genres, and synopsis whenever the streaming source omits them.
+- Logging in is opt-in:
+
+  ```sh
+  anime-levisione login --client-id 1234   # client id from anilist.co/settings/developer
+  anime-levisione logout
+  ```
+
+  After authorizing in the browser you paste the shown token once; it is stored in `anilist.json` in the config directory (never in `library.json`).
+- While logged in, adding a title to the watchlist (`w`) creates a *Planning* entry, and completing an episode (`m`, or finishing it in mpv) advances your AniList progress (*Watching* / *Completed*). Syncs never downgrade the remote list.
+- Private mode (`P` / `--private`) is a hard off switch: no AniList reads or writes happen at all.
+- Failures appear in the `!` diagnostics modal and degrade to provider-only data; requests are paced well inside AniList's ~90/min limit.
+
 ### Watching, resuming, downloading
 
 - mpv resume/watched progress is captured through mpv's IPC (nothing is written by the provider page). With VLC (the default when installed) playback and `--start-time` resume work, but mark episodes watched manually with `m`.
@@ -88,8 +106,9 @@ The providers rotate their domains every few weeks (AnimeUnity alone went `anime
 
 | Path                                                  | Purpose                                            |
 | ----------------------------------------------------- | -------------------------------------------------- |
-| `~/.config/anime-levisione/config.toml` (platform equivalent) | player, `player_args`, download dir, provider URLs and mirror candidates |
+| `~/.config/anime-levisione/config.toml` (platform equivalent) | player, `player_args`, download dir, provider URLs and mirror candidates, `anilist_client_id` |
 | `~/.config/anime-levisione/domains.json`                      | auto-detected live provider domains (disposable cache) |
+| `~/.config/anime-levisione/anilist.json`                     | AniList token (only after `login`; never shared via the library) |
 | `~/.config/anime-levisione/library.json`                      | watchlist, history, resume points, recent searches |
 
 Player and its arguments are launched directly, never through a shell. A second instance refuses to open the same library instead of racing writes.

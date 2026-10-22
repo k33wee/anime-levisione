@@ -1,3 +1,4 @@
+pub mod anilist;
 pub mod app;
 pub mod demo;
 pub mod events;

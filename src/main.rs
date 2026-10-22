@@ -1,4 +1,4 @@
-use anime_levisione::{app, demo, events, input, model, playback, provider, store, ui};
+use anime_levisione::{anilist, app, demo, events, input, model, playback, provider, store, ui};
 use anyhow::{Context, Result, bail};
 use app::{Action, App};
 use clap::{Parser, Subcommand};
@@ -61,6 +61,14 @@ enum Commands {
     },
     /// Check player, downloader, configuration and live provider connectivity
     Doctor,
+    /// Connect AniList: open the authorization page and store your token
+    Login {
+        /// AniList OAuth client id (else anilist_client_id from config.toml)
+        #[arg(long)]
+        client_id: Option<u32>,
+    },
+    /// Remove the stored AniList token (metadata stays anonymous)
+    Logout,
 }
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -88,6 +96,14 @@ async fn main() -> Result<()> {
             store.as_ref().map(|s| s.dir.as_path()),
         )?)
     };
+    let anilist = if cli.demo {
+        None
+    } else {
+        store
+            .as_ref()
+            .map(|s| anilist::Client::open(&s.dir).map(Arc::new))
+            .transpose()?
+    };
     if let Some(command) = cli.command {
         let registry = registry.context("No providers configured")?;
         return match command {
@@ -104,6 +120,10 @@ async fn main() -> Result<()> {
                 )
                 .await
             }
+            Commands::Login { client_id } => {
+                login(client_id, store.as_ref().context("No config directory")?).await
+            }
+            Commands::Logout => logout(store.as_ref().context("No config directory")?),
         };
     }
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
@@ -120,6 +140,9 @@ async fn main() -> Result<()> {
         .map(|s| s.dir.display().to_string())
         .unwrap_or_else(|| "Demo (not saved)".into());
     let mut app = App::new(config, library, path, cli.demo);
+    app.anilist_user = anilist
+        .as_ref()
+        .and_then(|client| client.user().map(str::to_owned));
     if cli.demo {
         demo::populate(&mut app);
     }
@@ -144,6 +167,9 @@ async fn main() -> Result<()> {
     let mut effects = Effects {
         store,
         registry,
+        anilist,
+        lookup: None,
+        track: vec![],
         tx,
         search: vec![],
         detail: None,
@@ -233,6 +259,9 @@ impl Drop for TerminalRestore {
 struct Effects {
     store: Option<Store>,
     registry: Option<Registry>,
+    anilist: Option<Arc<anilist::Client>>,
+    lookup: Option<JoinHandle<()>>,
+    track: Vec<JoinHandle<()>>,
     tx: mpsc::UnboundedSender<Message>,
     search: Vec<JoinHandle<()>>,
     detail: Option<JoinHandle<()>>,
@@ -406,6 +435,33 @@ impl Effects {
                         let _ = tx.send(Message::DownloadEnded(result));
                     }));
                 }
+                Action::Lookup(anime) => {
+                    abort(&mut self.lookup);
+                    let Some(client) = self.anilist.clone() else {
+                        continue;
+                    };
+                    let tx = self.tx.clone();
+                    let key = anime.key();
+                    self.lookup = Some(tokio::spawn(async move {
+                        let result = bounded(client.lookup(&anime))
+                            .await
+                            .map_err(|e| format!("{e:#}"));
+                        let _ = tx.send(Message::Meta { key, result });
+                    }));
+                }
+                Action::Track { anime, event } => {
+                    let Some(client) = self.anilist.clone() else {
+                        continue;
+                    };
+                    let tx = self.tx.clone();
+                    self.track.retain(|handle| !handle.is_finished());
+                    self.track.push(tokio::spawn(async move {
+                        let result = bounded(client.track(&anime, event))
+                            .await
+                            .map_err(|e| format!("{e:#}"));
+                        let _ = tx.send(Message::Tracked(result));
+                    }));
+                }
             }
         }
         false
@@ -435,9 +491,84 @@ impl Effects {
             handle.abort();
         }
         abort(&mut self.detail);
+        abort(&mut self.lookup);
+        for handle in self.track.drain(..) {
+            handle.abort();
+        }
         abort(&mut self.player);
         abort(&mut self.download);
     }
+}
+async fn login(client_id: Option<u32>, store: &Store) -> Result<()> {
+    let client_id = client_id.unwrap_or(store.config.anilist_client_id);
+    if client_id == 0 {
+        println!("AniList login needs a client id from https://anilist.co/settings/developer");
+        println!("Create a client (any name, no redirect URL needed), then either:");
+        println!("  anime-levisione login --client-id 1234");
+        println!(
+            "  or set anilist_client_id = 1234 in {}",
+            store.dir.display()
+        );
+        return Ok(());
+    }
+    let url = anilist::authorize_url(client_id);
+    println!("1. Open this URL in a browser and authorize anime-levisione:");
+    println!("   {url}");
+    if let Err(e) = open_browser(&url) {
+        println!("   (could not open a browser automatically: {e:#})");
+    }
+    println!("2. Copy the token shown on the authorization page.");
+    print!("3. Paste the token here: ");
+    use std::io::Write as _;
+    io::stdout().flush()?;
+    let mut pasted = String::new();
+    while pasted.trim().is_empty() {
+        pasted.clear();
+        io::stdin().read_line(&mut pasted)?;
+        if pasted.trim().is_empty() {
+            println!("Token cannot be empty; paste it again (Ctrl+c to abort):");
+        }
+    }
+    let token = pasted.trim().to_owned();
+    let user = anilist::Client::with_token(token.clone())?
+        .viewer()
+        .await
+        .context("AniList rejected this token")?;
+    anilist::Token {
+        user: user.clone(),
+        token,
+        stored: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    }
+    .save(&store.dir)?;
+    println!("Logged in as {user}. Watchlist adds and watched episodes sync from the TUI.");
+    Ok(())
+}
+fn logout(store: &Store) -> Result<()> {
+    let path = anilist::Token::path(&store.dir);
+    if path.exists() {
+        std::fs::remove_file(&path).with_context(|| format!("Cannot remove {}", path.display()))?;
+        println!("AniList token removed; metadata still loads anonymously.");
+    } else {
+        println!("No AniList token stored.");
+    }
+    Ok(())
+}
+/// Best effort: open the authorization page; a missing helper is not an error.
+fn open_browser(url: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    let (program, args): (&str, Vec<&str>) = ("open", vec![url]);
+    #[cfg(target_os = "windows")]
+    let (program, args): (&str, Vec<&str>) = ("cmd", vec!["/C", "start", "", url]);
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let (program, args): (&str, Vec<&str>) = ("xdg-open", vec![url]);
+    std::process::Command::new(program)
+        .args(&args)
+        .spawn()
+        .with_context(|| format!("Cannot launch {program}"))?;
+    Ok(())
 }
 async fn search_cli(
     registry: Registry,
@@ -547,6 +678,19 @@ async fn doctor(config: &Config, registry: &Registry, store: &Store) -> Result<(
     }
     if healthy == 0 {
         bail!("No provider is reachable");
+    }
+    match anilist::Client::open(&store.dir) {
+        Ok(client) if client.logged_in() => match bounded(client.viewer()).await {
+            Ok(user) => println!("OK AniList: logged in as {user}"),
+            Err(e) => println!("!! AniList: {e:#}"),
+        },
+        Ok(client) => match bounded(client.search("frieren")).await {
+            Ok(_) => {
+                println!("-- AniList: reachable · not logged in (`anime-levisione login` to sync)")
+            }
+            Err(e) => println!("!! AniList: {e:#}"),
+        },
+        Err(e) => println!("!! AniList: {e:#}"),
     }
     Ok(())
 }

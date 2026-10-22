@@ -403,6 +403,7 @@ fn details(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
     let anime = app.detail().map_or(selected, |(a, _)| a);
+    let entry = app.meta.get(&anime.key()).and_then(|m| m.as_ref());
     let mut lines = vec![
         Line::from(Span::styled(
             anime.title.clone(),
@@ -438,8 +439,45 @@ fn details(frame: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(Color::Yellow),
         ),
     ]));
+    if let Some(entry) = entry {
+        // Score and episode count fill in what the streaming source omits.
+        let episodes = if anime.episodes == 0 && entry.episodes.is_some() {
+            format!("{} episodes", entry.episodes.unwrap_or_default())
+        } else {
+            String::new()
+        };
+        let bits = [
+            (!entry.display_score().is_empty()).then(|| format!("★ {}", entry.display_score())),
+            (!entry.display_status().is_empty()).then(|| entry.display_status()),
+            (!episodes.is_empty()).then_some(episodes),
+            (!entry.genres.is_empty()).then(|| {
+                entry
+                    .genres
+                    .iter()
+                    .take(4)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("  ·  ");
+        if !bits.is_empty() {
+            lines.push(Line::from(vec![
+                accent("AniList"),
+                dim("  |  "),
+                Span::raw(bits),
+            ]));
+        }
+    } else if app.meta_pending.is_some() {
+        lines.push(Line::from(dim("AniList: looking up…")));
+    }
     if !anime.genres.is_empty() {
         lines.push(Line::from(dim(anime.genres.join(" · "))));
+    } else if let Some(entry) = entry.filter(|m| !m.genres.is_empty()) {
+        lines.push(Line::from(dim(entry.genres.join(" · "))));
     }
     if app.library.bookmarked(anime) {
         lines.push(Line::from(Span::styled(
@@ -458,10 +496,12 @@ fn details(frame: &mut Frame, app: &mut App, area: Rect) {
         )));
         lines.push(Line::from(accent("Focus episodes, then r to retry.")));
     }
-    lines.push(Line::from(if anime.synopsis.is_empty() {
-        dim("No synopsis supplied by this source.")
-    } else {
+    lines.push(Line::from(if !anime.synopsis.is_empty() {
         Span::raw(anime.synopsis.clone())
+    } else if let Some(entry) = entry.filter(|m| !m.plain_description().is_empty()) {
+        Span::raw(entry.plain_description())
+    } else {
+        dim("No synopsis supplied by this source.")
     }));
     lines.push(Line::from(""));
     if let Some(episode) = app.selected_episode()
@@ -707,6 +747,12 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
                 "StreamingCommunity: {}",
                 app.config.streamingcommunity_url
             )),
+            Line::from(format!(
+                "AniList: {}",
+                app.anilist_user
+                    .clone()
+                    .unwrap_or_else(|| "not logged in · `anime-levisione login` to sync".into())
+            )),
             Line::from(format!("Private mode: {}", app.config.private)),
             Line::from(""),
             Line::from(dim(
@@ -756,6 +802,25 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
             if app.statuses.is_empty() {
                 lines.push(Line::from("No active search. Press / and enter a title."));
             }
+            let (text, color) = if app.config.private {
+                (
+                    "AniList: disabled (private mode keeps everything local)".to_string(),
+                    Color::Yellow,
+                )
+            } else if let Some(error) = &app.anilist_error {
+                (format!("AniList: {error}"), Color::Red)
+            } else if let Some(user) = &app.anilist_user {
+                (
+                    format!("AniList: syncing as {user} · watchlist and progress mirror outward"),
+                    ACTIVE,
+                )
+            } else {
+                (
+                    "AniList: metadata only · run `anime-levisione login` to sync".to_string(),
+                    ACTIVE,
+                )
+            };
+            lines.push(Line::from(Span::styled(text, Style::default().fg(color))));
             lines.push(Line::from(
                 "Use p to select another source, r to retry, , for provider URLs.",
             ));
@@ -807,6 +872,55 @@ mod tests {
             "Episodes",
             "Activity",
         ] {
+            assert!(text.contains(label), "missing {label}");
+        }
+        Ok(())
+    }
+    #[test]
+    fn anilist_metadata_enriches_the_details_panel() -> anyhow::Result<()> {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), false);
+        let anime = crate::model::Anime {
+            provider: crate::model::ProviderId::AnimeUnity,
+            id: "7".into(),
+            title: "Frieren".into(),
+            aliases: vec![],
+            synopsis: String::new(),
+            year: "2023".into(),
+            kind: "TV".into(),
+            status: String::new(),
+            score: String::new(),
+            episodes: 0,
+            dub: false,
+            genres: vec![],
+            page_url: String::new(),
+        };
+        app.discovered = vec![anime.clone()];
+        app.details.insert(anime.key(), (anime.clone(), vec![]));
+        app.rebuild();
+        app.titles.select(Some(0));
+        app.anilist_user = Some("viewer".into());
+        app.meta.insert(
+            anime.key(),
+            Some(crate::anilist::MediaEntry {
+                id: 21,
+                average_score: Some(86),
+                status: Some("FINISHED".into()),
+                episodes: Some(28),
+                genres: vec!["Adventure".into(), "Fantasy".into()],
+                description: Some("<i>Elven</i> mage".into()),
+                ..crate::anilist::MediaEntry::default()
+            }),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(160, 50))?;
+        terminal.draw(|f| draw(f, &mut app))?;
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        for label in ["AniList", "★ 8.6", "Finished", "28 episodes", "Elven mage"] {
             assert!(text.contains(label), "missing {label}");
         }
         Ok(())
