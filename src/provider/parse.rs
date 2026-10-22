@@ -271,9 +271,16 @@ pub fn unity_source(raw: &str) -> Result<Url> {
     {
         return web_url(&html_escape::decode_html_entities(&c[1]));
     }
+    vixcloud_playlist(raw)
+}
+
+/// The signed HLS playlist of a VixCloud player page. StreamingCommunity uses
+/// this directly: its `downloadUrl` cross-links to another site's page
+/// (`animeunity.so/video/...`), which is not a media file.
+pub fn vixcloud_playlist(raw: &str) -> Result<Url> {
     let start = raw
         .find("window.masterPlaylist")
-        .context("VixCloud player changed: no download or HLS playlist found")?;
+        .context("VixCloud player changed: no HLS playlist found")?;
     let chunk: String = raw[start..].chars().take(8000).collect();
     let url = PLAYLIST_URL_RE
         .captures(&chunk)
@@ -284,15 +291,254 @@ pub fn unity_source(raw: &str) -> Result<Url> {
             url.query_pairs_mut().append_pair(key, &c[1]);
         }
     }
+    // The token signature covers the full parameter set the player sends;
+    // without h=1 (canPlayFHD) the playlist rejects the request.
     if FHD_RE.is_match(raw) {
         url.query_pairs_mut().append_pair("h", "1");
     }
     Ok(url)
 }
 
+// ---------- StreamingCommunity ----------
+// Laravel Inertia pages: every page embeds its data as an HTML-escaped JSON
+// blob in a `data-page` attribute, so parsing is JSON-driven, not DOM-driven.
+
+static INERTIA_RE: LazyLock<Regex> = LazyLock::new(|| constant(r#"data-page="([^"]*)""#));
+static IFRAME_SRC_RE: LazyLock<Regex> = LazyLock::new(|| constant(r#"<iframe[^>]+src="([^"]+)""#));
+
+fn inertia_page(raw: &str) -> Result<Value> {
+    let attr = INERTIA_RE
+        .captures(raw)
+        .context("StreamingCommunity page has no Inertia data; its layout may have changed")?;
+    let json = html_escape::decode_html_entities(&attr[1]);
+    serde_json::from_str(&json).context("StreamingCommunity returned malformed page data")
+}
+
+fn year_of(v: &Value) -> String {
+    for key in ["release_date", "last_air_date"] {
+        if let Some(year) = v[key].as_str().and_then(|d| d.get(0..4)) {
+            return year.to_string();
+        }
+    }
+    String::new()
+}
+
+/// Map a title row from search results or homepage sliders onto the shared
+/// Anime model. The id doubles as the URL path segment `it/titles/{id}-{slug}`.
+fn community_row(v: &Value, base: &Url) -> Option<Anime> {
+    let id = v["id"].as_u64()?;
+    let slug = v["slug"].as_str()?;
+    let name = clean(v["name"].as_str()?);
+    Some(Anime {
+        provider: ProviderId::StreamingCommunity,
+        id: format!("{id}-{slug}"),
+        title: name,
+        aliases: vec![],
+        synopsis: String::new(),
+        year: year_of(v),
+        kind: if v["type"] == "tv" { "TV" } else { "Movie" }.into(),
+        status: String::new(),
+        score: text(v, "score"),
+        episodes: 0,
+        dub: !yes(v, "sub_ita"),
+        genres: vec![],
+        page_url: format!("{base}it/titles/{id}-{slug}"),
+    })
+}
+
+fn community_rows(titles: &[Value], base: &Url) -> Result<Vec<Anime>> {
+    let rows = titles
+        .iter()
+        .filter_map(|t| community_row(t, base))
+        .collect::<Vec<_>>();
+    if !titles.is_empty() && rows.is_empty() {
+        bail!("StreamingCommunity title rows could not be parsed");
+    }
+    Ok(rows)
+}
+
+/// Homepage check used by domain probes: a real homepage carries sliders.
+pub fn community_home(raw: &str) -> Result<()> {
+    let page = inertia_page(raw)?;
+    if page["props"]["sliders"].is_array() || page["props"]["titles"].is_array() {
+        Ok(())
+    } else {
+        bail!("StreamingCommunity homepage has no catalogue data")
+    }
+}
+
+pub fn community_search(raw: &str, base: &Url) -> Result<Vec<Anime>> {
+    let page = inertia_page(raw)?;
+    let titles = page["props"]["titles"]
+        .as_array()
+        .context("StreamingCommunity search returned no titles")?;
+    community_rows(titles, base)
+}
+
+pub fn community_latest(raw: &str, base: &Url) -> Result<Vec<Anime>> {
+    let page = inertia_page(raw)?;
+    let sliders = page["props"]["sliders"]
+        .as_array()
+        .context("StreamingCommunity homepage has no sliders")?;
+    // Prefer the "recently added" slider; fall back to the first with titles.
+    let titles = sliders
+        .iter()
+        .find(|s| s["label"].as_str().is_some_and(|l| l.contains("Aggiunti")))
+        .or_else(|| {
+            sliders
+                .iter()
+                .find(|s| s["titles"].as_array().is_some_and(|t| !t.is_empty()))
+        })
+        .and_then(|s| s["titles"].as_array())
+        .context("StreamingCommunity homepage sliders are empty")?;
+    community_rows(titles, base)
+}
+
+/// Parse a title page: fills detail fields on the Anime and returns the
+/// season numbers to fetch (empty for movies).
+pub fn community_detail(raw: &str, anime: &mut Anime) -> Result<Vec<u32>> {
+    let page = inertia_page(raw)?;
+    let title = &page["props"]["title"];
+    if title.is_null() {
+        bail!("StreamingCommunity title page has no data");
+    }
+    if let Some(alias) = title["original_name"].as_str().map(clean)
+        && !alias.is_empty()
+        && alias != anime.title
+    {
+        anime.aliases.push(alias);
+    }
+    anime.synopsis = title["plot"].as_str().map(clean).unwrap_or_default();
+    anime.status = text(title, "status");
+    anime.score = text(title, "score");
+    anime.year = year_of(title);
+    anime.dub = yes(title, "dub_ita");
+    anime.genres = title["genres"]
+        .as_array()
+        .map(|g| {
+            g.iter()
+                .filter_map(|x| x["name"].as_str().map(clean))
+                .collect()
+        })
+        .unwrap_or_else(|| anime.genres.clone());
+    let mut seasons = title["seasons"]
+        .as_array()
+        .map(|s| {
+            s.iter()
+                .filter_map(|x| x["number"].as_u64())
+                .map(|n| n as u32)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    seasons.sort_unstable();
+    Ok(seasons)
+}
+
+pub fn community_season(raw: &str) -> Result<Vec<Episode>> {
+    let page = inertia_page(raw)?;
+    let episodes = page["props"]["loadedSeason"]["episodes"]
+        .as_array()
+        .context("StreamingCommunity season page has no episodes")?;
+    let out = episodes
+        .iter()
+        .filter_map(|e| {
+            Some(Episode {
+                id: e["id"].as_u64()?.to_string(),
+                number: text(e, "number"),
+                title: e["name"].as_str().map(clean).unwrap_or_default(),
+            })
+        })
+        .collect::<Vec<_>>();
+    if !episodes.is_empty() && out.is_empty() {
+        bail!("StreamingCommunity episode rows could not be parsed");
+    }
+    Ok(out)
+}
+
+/// The iframe page hands out a single-use, fully-signed VixCloud embed URL,
+/// exactly like AnimeUnity's embed endpoint.
+pub fn community_embed(raw: &str) -> Result<Url> {
+    let src = IFRAME_SRC_RE
+        .captures(raw)
+        .context("StreamingCommunity iframe page has no player")?;
+    web_url(&html_escape::decode_html_entities(&src[1]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn inertia_html(json: &str) -> String {
+        format!(
+            r#"<div id="app" data-page="{}"></div>"#,
+            json.replace('"', "&quot;")
+        )
+    }
+    #[test]
+    fn community_search_maps_rows_and_keeps_signed_embed_urls() -> Result<()> {
+        let base = Url::parse("https://streamingcommunity.example")?;
+        let page = r#"{"props":{"titles":[{"id":6654,"slug":"one-piece","name":"ONE PIECE","type":"tv","score":"8.5","sub_ita":0,"release_date":"2023-08-31","seasons_count":2}]}}"#;
+        let mut animes = community_search(&inertia_html(page), &base)?;
+        assert_eq!(animes.len(), 1);
+        let anime = animes.remove(0);
+        assert_eq!(anime.id, "6654-one-piece");
+        assert_eq!(anime.title, "ONE PIECE");
+        assert_eq!(anime.kind, "TV");
+        assert_eq!(anime.year, "2023");
+        assert!(anime.dub, "Italian dub by default when sub_ita is 0");
+        assert_eq!(
+            anime.page_url,
+            "https://streamingcommunity.example/it/titles/6654-one-piece"
+        );
+        // A search page without a titles array is a parse error, never an empty result.
+        assert!(community_search(&inertia_html("{\"props\":{}}"), &base).is_err());
+        assert!(community_home("<html>parked</html>").is_err());
+        Ok(())
+    }
+    #[test]
+    fn community_latest_prefers_recently_added_slider() -> Result<()> {
+        let base = Url::parse("https://streamingcommunity.example")?;
+        let page = r#"{"props":{"sliders":[{"label":"I titoli del momento","titles":[{"id":1,"slug":"trending","name":"Trending","type":"tv"}]},{"label":"Aggiunti di recente","titles":[{"id":2,"slug":"recent","name":"Recent","type":"movie","score":null}]}]}}"#;
+        let animes = community_latest(&inertia_html(page), &base)?;
+        assert_eq!(animes.len(), 1);
+        assert_eq!(animes[0].id, "2-recent");
+        assert_eq!(animes[0].kind, "Movie");
+        Ok(())
+    }
+    #[test]
+    fn community_detail_fills_fields_and_lists_seasons() -> Result<()> {
+        let base = Url::parse("https://streamingcommunity.example")?;
+        let mut anime = community_search(
+        &inertia_html(
+            r#"{"props":{"titles":[{"id":6654,"slug":"one-piece","name":"One Piece","type":"tv"}]}}"#,
+        ),
+        &base,
+    )?
+    .remove(0);
+        let page = r#"{"props":{"title":{"id":6654,"type":"tv","status":"Returning Series","score":"8.5","sub_ita":0,"dub_ita":1,"plot":"La storia segue…","original_name":"ONE PIECE","release_date":"2023-08-31","genres":[{"name":"Sci-Fi & Fantasy"}],"seasons":[{"number":2},{"number":1}]}}}"#;
+        let seasons = community_detail(&inertia_html(page), &mut anime)?;
+        assert_eq!(seasons, [1, 2]);
+        assert_eq!(anime.status, "Returning Series");
+        assert_eq!(anime.synopsis, "La storia segue…");
+        assert_eq!(anime.genres, ["Sci-Fi & Fantasy"]);
+        assert!(anime.dub);
+        assert_eq!(anime.aliases, ["ONE PIECE"]);
+        Ok(())
+    }
+    #[test]
+    fn community_season_and_embed_extract_player_data() -> Result<()> {
+        let page = r#"{"props":{"loadedSeason":{"episodes":[{"id":42659,"number":1,"name":"ROMANCE DAWN, L'ALBA","scws_id":682356}]}}}"#;
+        let episodes = community_season(&inertia_html(page))?;
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].id, "42659");
+        assert_eq!(episodes[0].number, "1");
+        assert_eq!(episodes[0].title, "ROMANCE DAWN, L'ALBA");
+        let iframe = "<iframe src=\"https://vixcloud.cc/embed/538142?token=abc&amp;t=QnVkZHk&amp;expires=42\" allowfullscreen></iframe>";
+        let embed = community_embed(iframe)?;
+        assert_eq!(embed.host_str(), Some("vixcloud.cc"));
+        assert!(embed.query_pairs().any(|(k, v)| k == "token" && v == "abc"));
+        assert!(community_embed("<html>no player</html>").is_err());
+        Ok(())
+    }
     #[test]
     fn signed_hls_and_direct_file() -> Result<()> {
         let raw = include_str!("../../tests/fixtures/vixcloud.html");
@@ -334,6 +580,19 @@ mod tests {
         assert_eq!(a.title, "Pokémon & Friends");
         assert_eq!(eps[0].number, "1.5");
         assert_eq!(a.synopsis, "A story & an adventure.");
+        Ok(())
+    }
+    #[test]
+    fn community_playlist_ignores_cross_site_download_link() -> Result<()> {
+        // StreamingCommunity player pages: the downloadUrl cross-links to
+        // another vixcloud site's page, so only the signed playlist is a
+        // real source.
+        let page = "<script>\nwindow.masterPlaylist = {\nparams: { 'token': 'sig', 'expires': '42', 'asn': '', },\nurl: 'https://vixcloud.cc/playlist/538142',\n}\nwindow.canPlayFHD = true\nwindow.downloadUrl = 'https://animeunity.so/video/538142'\n</script>";
+        let playlist = vixcloud_playlist(page)?;
+        assert_eq!(
+            playlist.as_str(),
+            "https://vixcloud.cc/playlist/538142?token=sig&expires=42&h=1"
+        );
         Ok(())
     }
     #[test]

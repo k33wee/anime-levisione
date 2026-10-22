@@ -2,14 +2,14 @@
 
 **Watch anime from your terminal — a fast, keyboard-first TUI inspired by lazygit.**
 
-`anime-levisione` is a TUI that searches two Italian anime libraries in parallel, keeps a watchlist, resumes episodes where you left off, and plays or downloads them without leaving the app.
+`anime-levisione` is a TUI that searches three Italian streaming libraries in parallel (AnimeWorld, AnimeUnity, and StreamingCommunity), keeps a watchlist, resumes episodes where you left off, and plays or downloads them without leaving the app.
 
 Pure Rust. No fzf. Just one binary.
 
 ```
 ╭[1]-Search──────────────────────────╮ ╭[0]-Anime details────────────────────────────╮
 │> search any title…                 │ │Frieren: Beyond Journey's End                │
-│AW 12  AU 9                         │ │TV · 2023 · Finished                         │
+│AW 12  AU 9  SC 30                   │ │TV · 2023 · Finished                         │
 │p: All sources  a: All audio        │ │AnimeWorld | SUB ITA | 28 episodes | Score 9.03│
 ╰────────────────────────────────────╯ ╰──────────────────────────────────────────────╯
 ╭[2]-Discover - Search───────────────╮ ╭Episodes · Enter: play · f: filter───────────╮
@@ -60,11 +60,22 @@ anime-levisione doctor             # check player, ffmpeg, and provider connecti
 - `r` retry/refresh · `P` private mode · `:` command palette · `?` full keybindings
 - `Ctrl+x / Ctrl+d` stop playback / cancel download · `q` quit (asks when jobs are running)
 
+### Domains that keep rotating
+
+The providers rotate their domains every few weeks (AnimeUnity alone went `animeunity.so` → `.to` → `.co` in days, and StreamingCommunity changes even faster). Instead of breaking until the config is edited, each provider locates itself:
+
+- The configured URL is probed first, then the last domain that worked (`domains.json`), extra mirrors from `config.toml` (`animeunity_domains = ["https://…"]`, `animeworld_domains`, `streamingcommunity_domains`), and a built-in list of known domains — in parallel, primary first.
+- Redirects are followed, so a dead domain forwarding to its successor is adopted automatically.
+- A domain only counts as live once its homepage can bootstrap a provider session (a CSRF token for the anime sites, catalogue data for StreamingCommunity; parked or hijacked domains cannot).
+- If a request fails mid-session, the candidates are probed again and the request is retried once on the new domain; the UI announces the move.
+
+`anime-levisione doctor` shows what was resolved, e.g. `Domain AnimeUnity: auto-detected https://www.animeunity.co/ (configured https://www.animeunity.to/)`.
+
 ### Search that stays reliable
 
-- Both providers are queried **in parallel**; if one fails you still see the other, with the failure shown in `[1]` and `!` diagnostics.
+- All providers are queried **in parallel**; if one fails you still see the others, with failures shown in `[1]` and `!` diagnostics. Cycle a single source with `p`.
 - Typed searches debounce at 350 ms and each request is generation-tagged, so slow responses can never overwrite a newer query.
-- Requests retry on transient errors and 419 sessions are refreshed automatically.
+- Requests retry on transient errors and 419 sessions are refreshed automatically; domain rotations are handled as described above.
 - Ranking prefers exact/prefix/title matches, then token and fuzzy similarity; English, Italian, and romaji titles all work (accent-insensitive).
 
 ### Watching, resuming, downloading
@@ -77,7 +88,8 @@ anime-levisione doctor             # check player, ffmpeg, and provider connecti
 
 | Path                                                  | Purpose                                            |
 | ----------------------------------------------------- | -------------------------------------------------- |
-| `~/.config/anime-levisione/config.toml` (platform equivalent) | player, `player_args`, download dir, provider URLs |
+| `~/.config/anime-levisione/config.toml` (platform equivalent) | player, `player_args`, download dir, provider URLs and mirror candidates |
+| `~/.config/anime-levisione/domains.json`                      | auto-detected live provider domains (disposable cache) |
 | `~/.config/anime-levisione/library.json`                      | watchlist, history, resume points, recent searches |
 
 Player and its arguments are launched directly, never through a shell. A second instance refuses to open the same library instead of racing writes.

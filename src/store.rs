@@ -17,7 +17,20 @@ pub struct Config {
     pub player_args: Vec<String>,
     pub download_dir: PathBuf,
     pub animeworld_url: String,
+    /// Extra AnimeWorld mirror domains probed when the configured URL stops
+    /// answering. Full `https://host` URLs.
+    #[serde(default)]
+    pub animeworld_domains: Vec<String>,
     pub animeunity_url: String,
+    /// Extra AnimeUnity mirror domains probed when the configured URL stops
+    /// answering. Full `https://host` URLs.
+    #[serde(default)]
+    pub animeunity_domains: Vec<String>,
+    pub streamingcommunity_url: String,
+    /// Extra StreamingCommunity mirror domains probed when the configured URL
+    /// stops answering. Full `https://host` URLs.
+    #[serde(default)]
+    pub streamingcommunity_domains: Vec<String>,
     pub private: bool,
 }
 impl Default for Config {
@@ -30,7 +43,11 @@ impl Default for Config {
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("Anime"),
             animeworld_url: "https://www.animeworld.ac".into(),
+            animeworld_domains: vec![],
             animeunity_url: "https://www.animeunity.to".into(),
+            animeunity_domains: vec![],
+            streamingcommunity_url: "https://streamingcommunityz.build".into(),
+            streamingcommunity_domains: vec![],
             private: false,
         }
     }

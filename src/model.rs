@@ -7,13 +7,15 @@ use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 pub enum ProviderId {
     AnimeWorld,
     AnimeUnity,
+    StreamingCommunity,
 }
 impl ProviderId {
-    pub const ALL: [Self; 2] = [Self::AnimeWorld, Self::AnimeUnity];
+    pub const ALL: [Self; 3] = [Self::AnimeWorld, Self::AnimeUnity, Self::StreamingCommunity];
     pub fn short(self) -> &'static str {
         match self {
             Self::AnimeWorld => "AW",
             Self::AnimeUnity => "AU",
+            Self::StreamingCommunity => "SC",
         }
     }
 }
@@ -22,6 +24,7 @@ impl fmt::Display for ProviderId {
         f.write_str(match self {
             Self::AnimeWorld => "AnimeWorld",
             Self::AnimeUnity => "AnimeUnity",
+            Self::StreamingCommunity => "StreamingCommunity",
         })
     }
 }

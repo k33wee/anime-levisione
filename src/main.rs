@@ -8,12 +8,13 @@ use crossterm::{
 };
 use events::Message;
 use futures_util::StreamExt;
-use model::{ProviderId, rank, sort_by_rank};
-use provider::{Registry, bounded};
+use model::{Anime, ProviderId, rank, sort_by_rank};
+use provider::{Provider, Registry, bounded};
 use std::{
     collections::VecDeque,
     io::{self, IsTerminal},
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use store::{Config, Library, Store};
@@ -82,7 +83,10 @@ async fn main() -> Result<()> {
     let registry = if cli.demo {
         None
     } else {
-        Some(Registry::new(&config)?)
+        Some(Registry::new(
+            &config,
+            store.as_ref().map(|s| s.dir.as_path()),
+        )?)
     };
     if let Some(command) = cli.command {
         let registry = registry.context("No providers configured")?;
@@ -120,6 +124,23 @@ async fn main() -> Result<()> {
         demo::populate(&mut app);
     }
     let (tx, mut rx) = mpsc::unbounded_channel();
+    // Locate live provider domains in the background: the TUI opens instantly,
+    // catalog requests wait on the same one-shot resolution, and a rotation is
+    // announced once it is found.
+    if let Some(registry) = registry.clone() {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            for id in ProviderId::ALL {
+                registry.ready(id).await;
+                let resolution = registry.resolution(id);
+                if resolution.moved()
+                    && let Some(url) = resolution.live.as_ref().map(|u| u.to_string())
+                {
+                    let _ = tx.send(Message::DomainMoved { provider: id, url });
+                }
+            }
+        });
+    }
     let mut effects = Effects {
         store,
         registry,
@@ -178,6 +199,30 @@ async fn main() -> Result<()> {
     effects.flush_pending(&mut app);
     result
 }
+/// After a failed provider request, probe the candidate domains again. When
+/// the provider has moved, notify the UI and hand back a provider pointed at
+/// the live domain so the caller can retry once.
+async fn relocate(
+    registry: &Registry,
+    id: ProviderId,
+    tx: &mpsc::UnboundedSender<Message>,
+    stale: &Provider,
+) -> std::result::Result<Arc<Provider>, String> {
+    let fresh = registry.revalidate(id).await?;
+    if fresh.base.origin() != stale.base.origin() {
+        let _ = tx.send(Message::DomainMoved {
+            provider: id,
+            url: fresh.base.to_string(),
+        });
+    }
+    Ok(fresh)
+}
+async fn catalog(provider: &Provider, query: &Option<String>) -> Result<Vec<Anime>> {
+    match query {
+        Some(q) => bounded(provider.search(q)).await,
+        None => bounded(provider.latest()).await,
+    }
+}
 struct TerminalRestore;
 impl Drop for TerminalRestore {
     fn drop(&mut self) {
@@ -235,17 +280,20 @@ impl Effects {
                     for id in ProviderId::ALL {
                         let tx = self.tx.clone();
                         if let Some(registry) = &self.registry {
-                            let provider = registry.get(id);
+                            let registry = registry.clone();
                             let query = query.clone();
                             self.search.push(tokio::spawn(async move {
-                                let result = bounded(async {
-                                    match query {
-                                        Some(q) => provider.search(&q).await,
-                                        None => provider.latest().await,
-                                    }
-                                })
-                                .await
-                                .map_err(|e| format!("{e:#}"));
+                                let provider = registry.ready(id).await;
+                                let mut result = catalog(&provider, &query)
+                                    .await
+                                    .map_err(|e| format!("{e:#}"));
+                                if result.is_err()
+                                    && registry.healable(id)
+                                    && let Ok(fresh) = relocate(&registry, id, &tx, &provider).await
+                                {
+                                    result =
+                                        catalog(&fresh, &query).await.map_err(|e| format!("{e:#}"));
+                                }
                                 let _ = tx.send(Message::Catalog {
                                     generation,
                                     provider: id,
@@ -271,13 +319,23 @@ impl Effects {
                 Action::Episodes(anime) => {
                     abort(&mut self.detail);
                     if let Some(registry) = &self.registry {
-                        let provider = registry.get(anime.provider);
+                        let registry = registry.clone();
                         let tx = self.tx.clone();
                         let key = anime.key();
                         self.detail = Some(tokio::spawn(async move {
-                            let result = bounded(provider.episodes(anime))
+                            let provider = registry.ready(anime.provider).await;
+                            let mut result = bounded(provider.episodes(anime.clone()))
                                 .await
                                 .map_err(|e| format!("{e:#}"));
+                            if result.is_err()
+                                && registry.healable(anime.provider)
+                                && let Ok(fresh) =
+                                    relocate(&registry, anime.provider, &tx, &provider).await
+                            {
+                                result = bounded(fresh.episodes(anime.clone()))
+                                    .await
+                                    .map_err(|e| format!("{e:#}"));
+                            }
                             let _ = tx.send(Message::Episodes { key, result });
                         }));
                     } else {
@@ -300,9 +358,19 @@ impl Effects {
                         let result = async {
                             let media = match local {
                                 Some(media) => media,
-                                None => playback::Media::Remote(
-                                    bounded(registry.get(anime.provider).resolve(&episode)).await?,
-                                ),
+                                None => {
+                                    let provider = registry.ready(anime.provider).await;
+                                    let mut stream = bounded(provider.resolve(&episode)).await;
+                                    if stream.is_err()
+                                        && registry.healable(anime.provider)
+                                        && let Ok(fresh) =
+                                            relocate(&registry, anime.provider, &tx, &provider)
+                                                .await
+                                    {
+                                        stream = bounded(fresh.resolve(&episode)).await;
+                                    }
+                                    playback::Media::Remote(stream?)
+                                }
                             };
                             playback::play(config, media, anime, episode, resume, tx.clone()).await
                         }
@@ -320,8 +388,16 @@ impl Effects {
                     let tx = self.tx.clone();
                     self.download = Some(tokio::spawn(async move {
                         let result = async {
-                            let stream =
-                                bounded(registry.get(anime.provider).resolve(&episode)).await?;
+                            let provider = registry.ready(anime.provider).await;
+                            let mut stream = bounded(provider.resolve(&episode)).await;
+                            if stream.is_err()
+                                && registry.healable(anime.provider)
+                                && let Ok(fresh) =
+                                    relocate(&registry, anime.provider, &tx, &provider).await
+                            {
+                                stream = bounded(fresh.resolve(&episode)).await;
+                            }
+                            let stream = stream?;
                             let _ = tx.send(Message::DownloadStarted);
                             playback::download(config, stream, anime, episode).await
                         }
@@ -376,9 +452,12 @@ async fn search_cli(
         .into_iter()
         .filter(|&id| only.is_none_or(|p| p == id))
         .map(|id| {
-            let provider = registry.get(id);
+            let registry = registry.clone();
             let query = query.clone();
-            async move { (id, bounded(provider.search(&query)).await) }
+            async move {
+                let provider = registry.ready(id).await;
+                (id, bounded(provider.search(&query)).await)
+            }
         });
     let mut results = Vec::new();
     let mut successes = 0;
@@ -445,11 +524,19 @@ async fn doctor(config: &Config, registry: &Registry, store: &Store) -> Result<(
         );
     }
     let checks = ProviderId::ALL.map(|id| {
-        let provider = registry.get(id);
-        async move { (id, bounded(provider.latest()).await) }
+        let registry = registry.clone();
+        async move {
+            let provider = registry.ready(id).await;
+            (
+                id,
+                registry.resolution(id),
+                bounded(provider.latest()).await,
+            )
+        }
     });
     let mut healthy = 0;
-    for (id, result) in futures_util::future::join_all(checks).await {
+    for (id, resolution, result) in futures_util::future::join_all(checks).await {
+        println!("Domain {id}: {}", resolution.describe());
         match result {
             Ok(items) => {
                 healthy += 1;

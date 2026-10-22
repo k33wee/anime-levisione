@@ -7,8 +7,12 @@ use anime_levisione::{
     store::Config,
 };
 
-fn registry() -> Registry {
-    Registry::new(&Config::default()).expect("providers")
+async fn registry() -> Registry {
+    let registry = Registry::new(&Config::default(), None).expect("providers");
+    for id in ProviderId::ALL {
+        registry.ready(id).await;
+    }
+    registry
 }
 
 async fn first_with_episodes(
@@ -35,8 +39,84 @@ async fn first_with_episodes(
 
 #[tokio::test]
 #[ignore = "hits live providers"]
+async fn streamingcommunity_search_lists_episodes_and_resolves_a_stream() {
+    let registry = registry().await;
+    let results = bounded(
+        registry
+            .get(ProviderId::StreamingCommunity)
+            .search("one piece"),
+    )
+    .await
+    .expect("search");
+    assert!(!results.is_empty(), "no search results");
+    let anime = results.first().expect("a search result").clone();
+    let (_anime, episodes) = bounded(registry.get(ProviderId::StreamingCommunity).episodes(anime))
+        .await
+        .expect("episodes");
+    assert!(!episodes.is_empty(), "no episodes listed");
+    let stream = bounded(
+        registry
+            .get(ProviderId::StreamingCommunity)
+            .resolve(&episodes[0]),
+    )
+    .await
+    .expect("resolve");
+    assert!(!stream.url.host_str().unwrap_or_default().is_empty());
+    // Signed VixCloud playlists must carry their token parameters.
+    if stream
+        .url
+        .host_str()
+        .is_some_and(|h| h.contains("vixcloud"))
+    {
+        assert!(
+            stream.url.query_pairs().any(|(k, _)| k == "token"),
+            "missing signed token"
+        );
+    }
+    let client = reqwest::Client::builder()
+        .user_agent(anime_levisione::provider::http::USER_AGENT)
+        .build()
+        .expect("test client");
+    let response = client
+        .head(stream.url.clone())
+        .header("referer", &stream.referer)
+        .send()
+        .await
+        .expect("HEAD request");
+    assert!(
+        response.status().as_u16() < 400,
+        "source returned {}",
+        response.status()
+    );
+}
+
+#[tokio::test]
+#[ignore = "hits live providers"]
+async fn all_providers_resolve_a_live_domain() {
+    let registry = Registry::new(&Config::default(), None).expect("providers");
+    for id in ProviderId::ALL {
+        registry.ready(id).await;
+        let resolution = registry.resolution(id);
+        let live = resolution
+            .live
+            .as_ref()
+            .unwrap_or_else(|| panic!("{id} found no live domain: {:?}", resolution.error));
+        let host = live.host_str().unwrap_or_default();
+        assert!(
+            host.contains("anime") || host.contains("streamingcommunity"),
+            "unexpected {id} host {host}"
+        );
+        assert!(
+            resolution.provider.is_some(),
+            "{id} probe did not bootstrap a session"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "hits live providers"]
 async fn animeunity_search_lists_episodes_and_resolves_a_stream() {
-    let registry = registry();
+    let registry = registry().await;
     let (_anime, episodes) =
         first_with_episodes(&registry, ProviderId::AnimeUnity, "frieren").await;
     let stream = bounded(registry.get(ProviderId::AnimeUnity).resolve(&episodes[0]))
@@ -59,7 +139,7 @@ async fn animeunity_search_lists_episodes_and_resolves_a_stream() {
 #[tokio::test]
 #[ignore = "hits live providers"]
 async fn animeworld_search_lists_episodes_and_resolves_a_playable_file() {
-    let registry = registry();
+    let registry = registry().await;
     let (_anime, episodes) =
         first_with_episodes(&registry, ProviderId::AnimeWorld, "frieren").await;
     let stream = bounded(registry.get(ProviderId::AnimeWorld).resolve(&episodes[0]))
@@ -85,7 +165,7 @@ async fn animeworld_search_lists_episodes_and_resolves_a_playable_file() {
 #[tokio::test]
 #[ignore = "hits live providers"]
 async fn search_and_latest_are_non_empty_for_both_providers() {
-    let registry = registry();
+    let registry = registry().await;
     for id in ProviderId::ALL {
         let latest = bounded(registry.get(id).latest()).await.expect("latest");
         assert!(!latest.is_empty(), "{id} latest is empty");

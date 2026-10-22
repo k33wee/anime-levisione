@@ -703,7 +703,19 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
             Line::from(format!("Downloads: {}", app.config.download_dir.display())),
             Line::from(format!("AnimeWorld: {}", app.config.animeworld_url)),
             Line::from(format!("AnimeUnity: {}", app.config.animeunity_url)),
+            Line::from(format!(
+                "StreamingCommunity: {}",
+                app.config.streamingcommunity_url
+            )),
             Line::from(format!("Private mode: {}", app.config.private)),
+            Line::from(""),
+            Line::from(dim(
+                "Domains rotate often; the live one is auto-detected, followed through",
+            )),
+            Line::from(dim(
+                "redirects, cached in domains.json, and retried after failures. Add",
+            )),
+            Line::from(dim("candidate mirrors with *_domains keys in config.toml.")),
             Line::from(""),
             Line::from("mpv: automatic resume and watched tracking (macOS/Linux/WSL)."),
             Line::from("VLC: playback/resume; use m to mark completion manually."),

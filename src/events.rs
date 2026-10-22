@@ -4,6 +4,12 @@ use crate::{
 };
 
 pub enum Message {
+    /// A provider rotated to a new domain mid-run; the UI refreshes the shown
+    /// URL and the triggering request is retried on the live domain.
+    DomainMoved {
+        provider: ProviderId,
+        url: String,
+    },
     Catalog {
         generation: u64,
         provider: ProviderId,

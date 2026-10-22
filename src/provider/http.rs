@@ -10,6 +10,20 @@ pub const USER_AGENT: &str = concat!(
 );
 const MAX_BODY: usize = 8 * 1024 * 1024;
 
+fn build_client(
+    jar: &Arc<reqwest::cookie::Jar>,
+    timeout: Duration,
+    connect_timeout: Duration,
+) -> Result<Client> {
+    Ok(Client::builder()
+        .user_agent(USER_AGENT)
+        .cookie_provider(jar.clone())
+        .timeout(timeout)
+        .connect_timeout(connect_timeout)
+        .redirect(reqwest::redirect::Policy::limited(6))
+        .build()?)
+}
+
 pub fn web_url(raw: &str) -> Result<Url> {
     let url = Url::parse(raw.trim()).context("Provider returned an invalid URL")?;
     if !matches!(url.scheme(), "https" | "http")
@@ -28,26 +42,44 @@ pub struct Http {
 }
 impl Http {
     pub fn new() -> Result<Self> {
+        Self::with_timeouts(Duration::from_secs(15), Duration::from_secs(5))
+    }
+    /// A normal-timeout client that shares an existing cookie jar, used when a
+    /// probe provider is promoted to real traffic without losing its session.
+    pub fn sharing(jar: Arc<reqwest::cookie::Jar>) -> Result<Self> {
+        Ok(Self {
+            client: build_client(&jar, Duration::from_secs(15), Duration::from_secs(5))?,
+            jar,
+        })
+    }
+    /// Fail-fast client for parallel domain probes, where waiting out a full
+    /// retry cycle would stall startup.
+    pub fn with_timeouts(timeout: Duration, connect_timeout: Duration) -> Result<Self> {
         let jar = Arc::new(reqwest::cookie::Jar::default());
-        let client = Client::builder()
-            .user_agent(USER_AGENT)
-            .cookie_provider(jar.clone())
-            .timeout(Duration::from_secs(15))
-            .connect_timeout(Duration::from_secs(5))
-            .redirect(reqwest::redirect::Policy::limited(6))
-            .build()?;
-        Ok(Self { client, jar })
+        Ok(Self {
+            client: build_client(&jar, timeout, connect_timeout)?,
+            jar,
+        })
     }
     pub async fn text(&self, request: RequestBuilder) -> Result<String> {
+        Ok(self.fetch(request, true).await?.1)
+    }
+    /// Single-shot variant of [`Http::text`] that also reports the final URL
+    /// after redirects, so domain probes can notice provider rotations.
+    pub async fn text_at(&self, request: RequestBuilder) -> Result<(Url, String)> {
+        self.fetch(request, false).await
+    }
+    async fn fetch(&self, request: RequestBuilder, retry: bool) -> Result<(Url, String)> {
         for attempt in 0..3 {
             let req = request.try_clone().context("Cannot retry request body")?;
             let result = req.send().await;
             match result {
                 Ok(mut response) => {
                     let status = response.status();
-                    if (status.is_server_error()
-                        || status == StatusCode::TOO_MANY_REQUESTS
-                        || status == StatusCode::REQUEST_TIMEOUT)
+                    if retry
+                        && (status.is_server_error()
+                            || status == StatusCode::TOO_MANY_REQUESTS
+                            || status == StatusCode::REQUEST_TIMEOUT)
                         && attempt < 2
                     {
                         let wait = response
@@ -73,6 +105,7 @@ impl Http {
                             }
                         );
                     }
+                    let final_url = response.url().clone();
                     let mut bytes = Vec::new();
                     while let Some(chunk) = response.chunk().await? {
                         if bytes.len() + chunk.len() > MAX_BODY {
@@ -80,9 +113,12 @@ impl Http {
                         }
                         bytes.extend_from_slice(&chunk);
                     }
-                    return String::from_utf8(bytes).context("Provider returned non-UTF-8 text");
+                    return Ok((
+                        final_url,
+                        String::from_utf8(bytes).context("Provider returned non-UTF-8 text")?,
+                    ));
                 }
-                Err(e) if attempt < 2 && (e.is_timeout() || e.is_connect()) => {
+                Err(e) if retry && attempt < 2 && (e.is_timeout() || e.is_connect()) => {
                     tokio::time::sleep(Duration::from_millis(250 * (attempt + 1))).await;
                 }
                 Err(e) => {

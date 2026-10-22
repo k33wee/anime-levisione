@@ -399,6 +399,16 @@ impl App {
     }
     pub fn message(&mut self, message: Message) -> Vec<Action> {
         match message {
+            Message::DomainMoved { provider, url } => {
+                match provider {
+                    ProviderId::AnimeWorld => self.config.animeworld_url = url.clone(),
+                    ProviderId::AnimeUnity => self.config.animeunity_url = url.clone(),
+                    ProviderId::StreamingCommunity => {
+                        self.config.streamingcommunity_url = url.clone()
+                    }
+                }
+                self.notify(format!("{provider} moved to {url}; retrying"), false);
+            }
             Message::Catalog {
                 generation,
                 provider,
@@ -767,6 +777,7 @@ impl App {
                 self.provider_filter = match self.provider_filter {
                     None => Some(ProviderId::AnimeWorld),
                     Some(ProviderId::AnimeWorld) => Some(ProviderId::AnimeUnity),
+                    Some(ProviderId::AnimeUnity) => Some(ProviderId::StreamingCommunity),
                     _ => None,
                 };
                 self.titles.select(Some(0));
