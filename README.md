@@ -1,38 +1,43 @@
+<div align="center">
+
 # anime-levisione
 
-**Watch anime from your terminal — a fast, keyboard-first TUI inspired by lazygit.**
+**Your next episode. One terminal.**<br>
+Il tuo prossimo episodio. Un solo terminale.
 
-`anime-levisione` is a TUI that searches three Italian streaming libraries in parallel (AnimeWorld, AnimeUnity, and StreamingCommunity), keeps a watchlist, resumes episodes where you left off, and plays or downloads them without leaving the app.
+[English](#english) · [Italiano](#italiano)
 
-Pure Rust. No fzf. Just one binary.
+[![CI](https://github.com/k33wee/anime-levisione/actions/workflows/ci.yml/badge.svg)](https://github.com/k33wee/anime-levisione/actions/workflows/ci.yml)
+![Rust 1.88+](https://img.shields.io/badge/Rust-1.88%2B-e7a875?logo=rust&logoColor=white)
+[![GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-73e2a7)](https://www.gnu.org/licenses/gpl-3.0.html)
 
-```
-╭[1]-Search──────────────────────────╮ ╭[0]-Anime details────────────────────────────╮
-│> search any title…                 │ │Frieren: Beyond Journey's End                │
-│AW 12  AU 9  SC 30                   │ │TV · 2023 · Finished                         │
-│p: All sources  a: All audio        │ │AnimeWorld | SUB ITA | 28 episodes | Score 9.03│
-╰────────────────────────────────────╯ ╰──────────────────────────────────────────────╯
-╭[2]-Discover - Search───────────────╮ ╭Episodes · Enter: play · f: filter───────────╮
-│  AW Frieren: Beyond Journey's End  │ │ > Episode 1      resume 12:04               │
-│  AU Frieren: Beyond Journey's End  │ │ + Episode 2      watched                    │
-│  AW Frieren (ITA)                  │ │   Episode 3                                 │
-╰────────────────────────────────────╯ ╰──────────────────────────────────────────────╯
-╭[3]-Continue──────╮╭[4]-Watchlist───╮╭[5]-Offline─────╮ ╭Activity──────────────────╮
-```
+A keyboard-first anime browser inspired by lazygit. Built in Rust, with room for your mouse.
 
-## Requirements
+</div>
 
-| Tool                                 | Needed for     | Notes                                                                                                             |
-| ------------------------------------ | -------------- | ----------------------------------------------------------------------------------------------------------------- |
-| [VLC](https://www.videolan.org/vlc/) | playback       | **Default** when installed (on macOS the bundle path `/Applications/VLC.app/Contents/MacOS/VLC` is auto-detected) |
-| [mpv](https://mpv.io/installation/)  | playback       | Fallback default; recommended for automatic resume and watched tracking                                           |
-| [ffmpeg](https://ffmpeg.org/)        | downloads only | Handles both direct files and HLS streams                                                                         |
+![anime-levisione: search results, anime details, episodes, watchlist and activity in the offline demo](docs/screenshots/library.png)
 
-Works on Linux, macOS, and Windows terminals (including WSL).
+<details>
+<summary><strong>Choose your audio before pressing play / Scegli la lingua prima di partire</strong></summary>
 
-## Install
+![Pre-play audio picker offering Italian and English](docs/screenshots/audio-picker.png)
 
-From source (Rust 1.88+):
+*Captured from the running TUI: offline demo above, local bilingual sample here.*<br>
+*Catture della TUI in esecuzione: demo offline sopra, file di esempio bilingue qui.*
+
+</details>
+
+## English
+
+### Less browsing. More watching.
+
+- **Three sources, one search:** AnimeWorld, AnimeUnity and StreamingCommunity, with automatic domain discovery.
+- **Your library:** watchlist, resume, offline downloads and optional AniList sync.
+- **Your controls:** keyboard + mouse, adaptive panes, VLC/mpv and a pre-play audio-language picker.
+
+### Install
+
+Needs **Rust 1.88+** and **VLC or mpv**. Add `ffmpeg` for downloads; `ffprobe` is optional for file audio metadata. Linux, macOS and Windows/WSL.
 
 ```sh
 git clone https://github.com/k33wee/anime-levisione
@@ -40,76 +45,96 @@ cd anime-levisione
 cargo install --path .
 ```
 
-## Usage
+### Go
 
 ```sh
-anime-levisione                    # open the TUI on Discover
-anime-levisione "frieren"          # open with a search already running
-anime-levisione --demo             # offline preview of the UI (no network, no writes)
-anime-levisione search "naruto"    # scriptable search, ranks both providers
-anime-levisione search "naruto" --json --provider animeunity
-anime-levisione doctor             # check player, ffmpeg, providers, and AniList
-anime-levisione login              # connect AniList for metadata sync
+anime-levisione "frieren"                    # search and browse
+anime-levisione --demo                       # preview: no network or saved data
+anime-levisione --player mpv                 # override the player
+anime-levisione --private                    # no AniList or automatic history
+anime-levisione search "naruto" --json       # script-friendly search
+anime-levisione doctor                       # check your setup
 ```
 
-### Keyboard-first
+### Keep your hands on the keyboard
 
-- `/` search (debounced, both sources, ranked results) · `2` results · `3` continue · `4` watchlist · `5` offline · `0` details
-- `j/k ↑/↓ g/G PgUp/PgDn` navigate · `Tab h/l` switch pane
-- `Enter` open episodes, then play · `s` restart · `n` next episode
-- `w` watchlist · `m` mark watched · `d` download · `f` filter episodes · `p/a` provider & sub/dub filters
-- `r` retry/refresh · `P` private mode · `:` command palette · `?` full keybindings
-- `Ctrl+x / Ctrl+d` stop playback / cancel download · `q` quit (asks when jobs are running)
+| Key | Action |
+| --- | --- |
+| `/` | Search |
+| `Tab` / `Shift+Tab` · `0`–`7` | Switch / jump to a pane |
+| `j/k` · `↑/↓` · `PgUp/PgDn` | Navigate |
+| `Enter` · `s` · `n` | Open episodes / play · restart · next episode |
+| `w` · `m` · `d` | Watchlist · mark watched · download |
+| `Ctrl+x` · `Ctrl+d` | Stop playback · cancel download |
+| `?` · `:` · `q` | All shortcuts · commands · quit |
 
-### Domains that keep rotating
+Click to focus a pane or select a row; use the wheel to navigate. All panes fit at **60×18+**; smaller windows zoom the focused pane.
 
-The providers rotate their domains every few weeks (AnimeUnity alone went `animeunity.so` → `.to` → `.co` in days, and StreamingCommunity changes even faster). Instead of breaking until the config is edited, each provider locates itself:
+<details>
+<summary><strong>Audio, players & settings</strong></summary>
 
-- The configured URL is probed first, then the last domain that worked (`domains.json`), extra mirrors from `config.toml` (`animeunity_domains = ["https://…"]`, `animeworld_domains`, `streamingcommunity_domains`), and a built-in list of known domains — in parallel, primary first.
-- Redirects are followed, so a dead domain forwarding to its successor is adopted automatically.
-- A domain only counts as live once its homepage can bootstrap a provider session (a CSRF token for the anime sites, catalogue data for StreamingCommunity; parked or hijacked domains cannot).
-- If a request fails mid-session, the candidates are probed again and the request is retried once on the new domain; the UI announces the move.
+- **Audio:** multiple languages trigger a picker. Select with arrows or a click, then `Enter`; `Esc` cancels. HLS metadata needs no extra tool; other files use optional `ffprobe`. Unavailable metadata falls back to the player default. `a` filters the catalogue, not playback audio.
+- **Players:** VLC is the default when installed; its language is chosen at startup. mpv also saves playback progress automatically. With VLC, use `m` to mark episodes watched.
+- **Settings:** `,` shows paths. Edit `config.toml` for `player`, `player_args`, download directory or provider mirrors. `--data-dir <path>` keeps a separate library.
+- **AniList:** [create an OAuth client](https://anilist.co/settings/developer), then run `anime-levisione login --client-id YOUR_ID`. Sync is opt-in; `logout` disconnects it. Private mode disables AniList entirely.
 
-`anime-levisione doctor` shows what was resolved, e.g. `Domain AnimeUnity: auto-detected https://www.animeunity.co/ (configured https://www.animeunity.to/)`.
+</details>
 
-### Search that stays reliable
+## Italiano
 
-- All providers are queried **in parallel**; if one fails you still see the others, with failures shown in `[1]` and `!` diagnostics. Cycle a single source with `p`.
-- Typed searches debounce at 350 ms and each request is generation-tagged, so slow responses can never overwrite a newer query.
-- Requests retry on transient errors and 419 sessions are refreshed automatically; domain rotations are handled as described above.
-- Ranking prefers exact/prefix/title matches, then token and fuzzy similarity; English, Italian, and romaji titles all work (accent-insensitive).
+<details>
+<summary><strong>Apri la guida in italiano</strong></summary>
 
-### AniList metadata & tracking
+### Meno ricerche. Più episodi.
 
-AniList (no video hosting) enriches the details panel and, when you log in, mirrors your local activity outward:
+- **Tre fonti, una ricerca:** AnimeWorld, AnimeUnity e StreamingCommunity, con rilevamento automatico dei nuovi domini.
+- **La tua libreria:** watchlist, ripresa della visione, download offline e sincronizzazione AniList facoltativa.
+- **I tuoi comandi:** tastiera e mouse, pannelli adattivi, VLC/mpv e scelta della lingua prima della riproduzione.
 
-- Selecting a title looks it up on AniList (debounced, cached per title) and shows its score, status, episode count, genres, and synopsis whenever the streaming source omits them.
-- Logging in is opt-in:
+### Installa
 
-  ```sh
-  anime-levisione login --client-id 1234   # client id from anilist.co/settings/developer
-  anime-levisione logout
-  ```
+Servono **Rust 1.88+** e **VLC o mpv**. Aggiungi `ffmpeg` per scaricare; `ffprobe` è facoltativo per rilevare le lingue nei file. Linux, macOS e Windows/WSL.
 
-  After authorizing in the browser you paste the shown token once; it is stored in `anilist.json` in the config directory (never in `library.json`).
-- While logged in, adding a title to the watchlist (`w`) creates a *Planning* entry, and completing an episode (`m`, or finishing it in mpv) advances your AniList progress (*Watching* / *Completed*). Syncs never downgrade the remote list.
-- Private mode (`P` / `--private`) is a hard off switch: no AniList reads or writes happen at all.
-- Failures appear in the `!` diagnostics modal and degrade to provider-only data; requests are paced well inside AniList's ~90/min limit.
+```sh
+git clone https://github.com/k33wee/anime-levisione
+cd anime-levisione
+cargo install --path .
+```
 
-### Watching, resuming, downloading
+### Parti
 
-- mpv resume/watched progress is captured through mpv's IPC (nothing is written by the provider page). With VLC (the default when installed) playback and `--start-time` resume work, but mark episodes watched manually with `m`.
-- Downloads go to `<Videos>/Anime/<title> [AW-id]/Episode N.mkv` via ffmpeg stream copy, land atomically, and appear in the `[5] Offline` pane with a manifest that never escapes its folder.
-- `--private` (or `P`) disables automatic history saving for a session.
+```sh
+anime-levisione "frieren"                    # cerca e sfoglia
+anime-levisione --demo                       # anteprima: niente rete o salvataggi
+anime-levisione --player mpv                 # scegli un altro player
+anime-levisione --private                    # niente AniList o cronologia automatica
+anime-levisione search "naruto" --json       # ricerca per script
+anime-levisione doctor                       # controlla la configurazione
+```
 
-### Files
+### Tutto da tastiera
 
-| Path                                                  | Purpose                                            |
-| ----------------------------------------------------- | -------------------------------------------------- |
-| `~/.config/anime-levisione/config.toml` (platform equivalent) | player, `player_args`, download dir, provider URLs and mirror candidates, `anilist_client_id` |
-| `~/.config/anime-levisione/domains.json`                      | auto-detected live provider domains (disposable cache) |
-| `~/.config/anime-levisione/anilist.json`                     | AniList token (only after `login`; never shared via the library) |
-| `~/.config/anime-levisione/library.json`                      | watchlist, history, resume points, recent searches |
+| Tasto | Azione |
+| --- | --- |
+| `/` | Cerca |
+| `Tab` / `Shift+Tab` · `0`–`7` | Cambia pannello / vai direttamente a un pannello |
+| `j/k` · `↑/↓` · `PgUp/PgDn` | Naviga |
+| `Enter` · `s` · `n` | Apri gli episodi / riproduci · ricomincia · episodio successivo |
+| `w` · `m` · `d` | Watchlist · segna come visto · scarica |
+| `Ctrl+x` · `Ctrl+d` | Ferma la riproduzione · annulla il download |
+| `?` · `:` · `q` | Tutti i comandi · palette comandi · esci |
 
-Player and its arguments are launched directly, never through a shell. A second instance refuses to open the same library instead of racing writes.
-ty.
+Clicca per attivare un pannello o selezionare una riga; usa la rotella per navigare. Tutti i pannelli sono visibili da **60×18**; nelle finestre più piccole viene ingrandito quello attivo.
+
+### Audio, player e impostazioni
+
+- **Audio:** se ci sono più lingue, scegli con le frecce o un clic e conferma con `Enter`; `Esc` annulla. HLS non richiede strumenti extra; per gli altri file si usa `ffprobe`, se disponibile. Senza metadati si avvia l'audio predefinito. `a` filtra il catalogo, non cambia la traccia audio.
+- **Player:** VLC è il predefinito, se installato; la lingua viene impostata all'avvio. mpv salva anche il progresso automaticamente. Con VLC, usa `m` per segnare gli episodi come visti.
+- **Impostazioni:** `,` mostra i percorsi. In `config.toml` puoi cambiare `player`, `player_args`, cartella dei download e domini alternativi. `--data-dir <percorso>` usa una libreria separata.
+- **AniList:** [crea un client OAuth](https://anilist.co/settings/developer), poi esegui `anime-levisione login --client-id IL_TUO_ID`. La sincronizzazione è facoltativa; `logout` la scollega. La modalità privata disattiva completamente AniList.
+
+</details>
+
+---
+
+**GPL-3.0-only** · No warranty / Nessuna garanzia.
