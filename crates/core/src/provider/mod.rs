@@ -73,6 +73,21 @@ pub struct Stream {
     pub url: Url,
     pub referer: String,
 }
+/// What a playback request points at: a resolved remote stream or a file
+/// already on disk. Shared by the TUI player code and the audio prober.
+#[derive(Clone)]
+pub enum Media {
+    Remote(Stream),
+    Local(std::path::PathBuf),
+}
+impl Media {
+    pub fn source(&self) -> String {
+        match self {
+            Self::Remote(s) => s.url.to_string(),
+            Self::Local(p) => p.to_string_lossy().into_owned(),
+        }
+    }
+}
 pub struct Provider {
     pub id: ProviderId,
     pub base: Url,

@@ -27,6 +27,16 @@ jobs:
           else
             npx commitlint --last
           fi
+  bindings:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Regenerate Kotlin bindings
+        run: make bindings
+      - name: Committed bindings are up to date
+        run: git diff --exit-code -- android/app/src/main/java/uniffi
   test:
     strategy:
       fail-fast: false

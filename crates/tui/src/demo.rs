@@ -1,5 +1,5 @@
-use crate::{
-    app::{App, SourceStatus},
+use crate::app::{App, SourceStatus};
+use anime_levisione_core::{
     model::{Anime, Episode, ProviderId},
     store::Progress,
 };

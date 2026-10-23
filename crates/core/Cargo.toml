@@ -1,0 +1,46 @@
+[package]
+name = "anime-levisione-core"
+description = "Portable core of anime-levisione: providers, AniList, library (shared by the TUI and mobile apps)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+# cdylib/staticlib are what mobile build tools (cargo-ndk, XCFramework) link.
+crate-type = ["lib", "cdylib", "staticlib"]
+name = "anime_levisione_core"
+
+[dependencies]
+anyhow.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+directories = "6"
+fs4 = "1.1.0"
+html-escape = "0.2"
+regex = "1"
+reqwest = { version = "0.13", features = ["cookies", "json", "form", "query", "gzip", "brotli"] }
+scraper = "0.24"
+strsim = "0.11"
+tempfile = "3"
+toml = "0.9"
+unicode-normalization = "0.1"
+unicode-width = "0.2"
+url = { version = "2", features = ["serde"] }
+uniffi = { workspace = true, optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+
+[features]
+# `--features uniffi` builds the FFI facade for the Android app.
+uniffi = ["dep:uniffi"]
+# Lets the TUI CLI derive `clap::ValueEnum` on `ProviderId`.
+clap = ["dep:clap"]
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

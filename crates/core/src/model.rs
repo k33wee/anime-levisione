@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, fmt};
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderId {
     AnimeWorld,
@@ -30,6 +32,7 @@ impl fmt::Display for ProviderId {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Anime {
     pub provider: ProviderId,
     pub id: String,
@@ -65,6 +68,7 @@ impl Anime {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Episode {
     pub id: String,
     pub number: String,

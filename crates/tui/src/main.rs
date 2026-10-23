@@ -1,4 +1,5 @@
-use anime_levisione::{anilist, app, demo, events, input, model, playback, provider, store, ui};
+use anime_levisione::{app, demo, events, input, playback, ui};
+use anime_levisione_core::{anilist, model, provider, store};
 use anyhow::{Context, Result, bail};
 use app::{Action, App};
 use clap::{Parser, Subcommand};
@@ -301,9 +302,9 @@ async fn catalog(provider: &Provider, query: &Option<String>) -> Result<Vec<Anim
 /// Cancelling/aborting drops the receiver; stale prompts cannot launch a player.
 async fn choose_audio(
     request_id: u64,
-    tracks: Vec<anime_levisione::audio::AudioTrack>,
+    tracks: Vec<anime_levisione_core::audio::AudioTrack>,
     tx: &mpsc::UnboundedSender<Message>,
-) -> Result<Option<anime_levisione::audio::AudioTrack>> {
+) -> Result<Option<anime_levisione_core::audio::AudioTrack>> {
     if tracks.len() <= 1 {
         return Ok(None);
     }
@@ -469,7 +470,7 @@ impl Effects {
                             };
                             let (tracks, audio_warning) =
                                 if playback::supports_audio_choice(&config) {
-                                    match anime_levisione::audio::probe(&media).await {
+                                    match anime_levisione_core::audio::probe(&media).await {
                                         Ok(tracks) => (tracks, None),
                                         Err(error) => (vec![], Some(format!("{error:#}"))),
                                     }
@@ -1010,9 +1011,10 @@ mod tests {
     #[tokio::test]
     async fn one_audio_language_bypasses_the_picker() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let tracks =
-            anime_levisione::audio::hls_tracks("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"ita\"")
-                .expect("tracks");
+        let tracks = anime_levisione_core::audio::hls_tracks(
+            "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"ita\"",
+        )
+        .expect("tracks");
         assert!(
             choose_audio(7, tracks, &tx)
                 .await
@@ -1025,7 +1027,7 @@ mod tests {
     #[tokio::test]
     async fn multiple_audio_languages_wait_for_the_ui_and_cancel_if_it_closes() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let tracks = anime_levisione::audio::hls_tracks("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"ita\"\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"eng\"").expect("tracks");
+        let tracks = anime_levisione_core::audio::hls_tracks("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"ita\"\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"eng\"").expect("tracks");
         let task = tokio::spawn(async move { choose_audio(7, tracks, &tx).await });
         match rx.recv().await.expect("audio prompt") {
             Message::ChooseAudio {
@@ -1049,7 +1051,7 @@ mod tests {
             Some("eng")
         );
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let tracks = anime_levisione::audio::hls_tracks("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"ita\"\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"eng\"").expect("tracks");
+        let tracks = anime_levisione_core::audio::hls_tracks("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"ita\"\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"eng\"").expect("tracks");
         let task = tokio::spawn(async move { choose_audio(8, tracks, &tx).await });
         drop(rx.recv().await);
         assert!(task.await.expect("task").is_err());

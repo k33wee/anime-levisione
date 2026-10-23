@@ -1,5 +1,7 @@
-use crate::{
+use crate::playback::OfflineEpisode;
+use anime_levisione_core::{
     anilist::MediaEntry,
+    audio::AudioTrack,
     model::{Anime, Episode, ProviderId},
     store::Progress,
 };
@@ -30,11 +32,11 @@ pub enum Message {
         key: String,
         result: Result<(Anime, Vec<Episode>), String>,
     },
-    Offline(Result<Vec<crate::playback::OfflineEpisode>, String>),
+    Offline(Result<Vec<OfflineEpisode>, String>),
     ChooseAudio {
         request_id: u64,
-        tracks: Vec<crate::audio::AudioTrack>,
-        reply: tokio::sync::oneshot::Sender<Option<crate::audio::AudioTrack>>,
+        tracks: Vec<AudioTrack>,
+        reply: tokio::sync::oneshot::Sender<Option<AudioTrack>>,
     },
     PlaybackStarted {
         request_id: u64,

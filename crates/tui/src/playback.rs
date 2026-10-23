@@ -1,8 +1,8 @@
+use crate::events::Message;
 #[cfg(unix)]
-use crate::store::Progress;
-use crate::{
+use anime_levisione_core::store::Progress;
+use anime_levisione_core::{
     audio::AudioTrack,
-    events::Message,
     model::{Anime, Episode},
     provider::{Stream, http::USER_AGENT},
     store::Config,
@@ -18,19 +18,8 @@ use std::{
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::{io::AsyncRead, process::Command, sync::mpsc};
 
-#[derive(Clone)]
-pub enum Media {
-    Remote(Stream),
-    Local(PathBuf),
-}
-impl Media {
-    pub fn source(&self) -> String {
-        match self {
-            Self::Remote(s) => s.url.to_string(),
-            Self::Local(p) => p.to_string_lossy().into_owned(),
-        }
-    }
-}
+// Re-exported so player-side code can keep using `playback::Media`.
+pub use anime_levisione_core::provider::Media;
 pub struct PlayRequest {
     pub id: u64,
     pub media: Media,
@@ -71,7 +60,7 @@ pub async fn diagnostic_tail(reader: impl AsyncRead + Unpin) -> String {
             tail.drain(..tail.len() - 4096);
         }
     }
-    crate::model::clean(&String::from_utf8_lossy(&tail))
+    anime_levisione_core::model::clean(&String::from_utf8_lossy(&tail))
 }
 fn player_command(config: &Config, request: &PlayRequest, _socket: &Path) -> Command {
     let PlayRequest {
@@ -382,7 +371,10 @@ pub async fn download(
         episode,
         file: name,
     };
-    crate::store::atomic_write(&manifest_path, &serde_json::to_vec_pretty(&manifest)?)?;
+    anime_levisione_core::store::atomic_write(
+        &manifest_path,
+        &serde_json::to_vec_pretty(&manifest)?,
+    )?;
     temporary
         .persist_noclobber(&destination)
         .context("Cannot finalize download; existing file was not overwritten")?;

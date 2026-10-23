@@ -89,6 +89,10 @@ make hooks       # install the .githooks commit-msg / pre-push hooks
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org), checked by commitlint in CI (`make commitlint`, or `FROM=main make commitlint` for a whole branch).
 
+### Layout
+
+A Cargo workspace: `crates/core` holds the portable logic (providers, AniList, library) shared with the [Android app](android/README.md) through UniFFI; `crates/tui` is this terminal app. `make bindings` regenerates the Kotlin bindings after core API changes.
+
 </details>
 
 ## Italiano

@@ -1,7 +1,9 @@
 use crate::{
-    anilist,
     app::{App, COMMANDS, Focus, Modal, Pane, PaneRegion, View},
     input::Input,
+};
+use anime_levisione_core::{
+    anilist,
     model::{Anime, ProviderId},
 };
 use ratatui::{
@@ -1044,10 +1046,8 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        app::Audio,
-        store::{Config, Library},
-    };
+    use crate::app::Audio;
+    use anime_levisione_core::store::{Config, Library};
     use ratatui::{Terminal, backend::TestBackend};
     fn mouse(
         kind: crossterm::event::MouseEventKind,
@@ -1071,7 +1071,7 @@ mod tests {
     fn audio_picker_renders_and_mouse_selection_survives_resize() -> anyhow::Result<()> {
         let mut app = demo_app();
         app.playing = true;
-        let tracks = crate::audio::hls_tracks(
+        let tracks = anime_levisione_core::audio::hls_tracks(
             "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,NAME=\"Italian\",LANGUAGE=\"ita\",DEFAULT=YES\n#EXT-X-MEDIA:TYPE=AUDIO,NAME=\"English\",LANGUAGE=\"eng\"",
         )?;
         let (reply, mut receive) = tokio::sync::oneshot::channel();
@@ -1335,8 +1335,8 @@ mod tests {
     #[test]
     fn anilist_metadata_enriches_the_details_panel() -> anyhow::Result<()> {
         let mut app = App::new(Config::default(), Library::default(), "test".into(), false);
-        let anime = crate::model::Anime {
-            provider: crate::model::ProviderId::AnimeUnity,
+        let anime = anime_levisione_core::model::Anime {
+            provider: anime_levisione_core::model::ProviderId::AnimeUnity,
             id: "7".into(),
             title: "Frieren".into(),
             aliases: vec![],
@@ -1357,14 +1357,14 @@ mod tests {
         app.anilist_user = Some("viewer".into());
         app.meta.insert(
             anime.key(),
-            Some(crate::anilist::MediaEntry {
+            Some(anime_levisione_core::anilist::MediaEntry {
                 id: 21,
                 average_score: Some(86),
                 status: Some("FINISHED".into()),
                 episodes: Some(28),
                 genres: vec!["Adventure".into(), "Fantasy".into()],
                 description: Some("<i>Elven</i> mage".into()),
-                ..crate::anilist::MediaEntry::default()
+                ..anime_levisione_core::anilist::MediaEntry::default()
             }),
         );
         let mut terminal = Terminal::new(TestBackend::new(160, 50))?;

@@ -1,10 +1,9 @@
-use crate::{
+use crate::{events::Message, input::Input, playback::OfflineEpisode};
+use anime_levisione_core::{
     anilist::{MediaEntry, TrackEvent},
     audio::AudioTrack,
-    events::Message,
-    input::Input,
     model::{Anime, Episode, ProviderId, normalize, sort_by_rank},
-    playback::{Media, OfflineEpisode},
+    provider::Media,
     store::{Config, Library, Progress},
 };
 use crossterm::event::{
@@ -1505,7 +1504,7 @@ mod tests {
         request_id: u64,
     ) -> tokio::sync::oneshot::Receiver<Option<AudioTrack>> {
         let (reply, receive) = tokio::sync::oneshot::channel();
-        let tracks = crate::audio::hls_tracks("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,NAME=\"Italian\",LANGUAGE=\"ita\",DEFAULT=YES\n#EXT-X-MEDIA:TYPE=AUDIO,NAME=\"English\",LANGUAGE=\"eng\"").expect("tracks");
+        let tracks = anime_levisione_core::audio::hls_tracks("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,NAME=\"Italian\",LANGUAGE=\"ita\",DEFAULT=YES\n#EXT-X-MEDIA:TYPE=AUDIO,NAME=\"English\",LANGUAGE=\"eng\"").expect("tracks");
         app.message(Message::ChooseAudio {
             request_id,
             tracks,
@@ -1961,7 +1960,7 @@ mod tests {
             number: "1".into(),
             title: String::new(),
         };
-        let progress = |completed| crate::store::Progress {
+        let progress = |completed| anime_levisione_core::store::Progress {
             episode: episode.clone(),
             seconds: 100.0,
             duration: 100.0,

@@ -1,10 +1,11 @@
 //! Live provider checks. These hit the real AnimeWorld/AnimeUnity sites, so they are
 //! excluded from normal runs: `cargo test -- --ignored`.
 
-use anime_levisione::{
-    anilist,
+use anime_levisione::playback;
+use anime_levisione_core::{
+    anilist, audio,
     model::{Anime, Episode, ProviderId},
-    provider::{Registry, bounded},
+    provider::{Registry, bounded, http},
     store::Config,
 };
 
@@ -105,7 +106,7 @@ async fn streamingcommunity_search_lists_episodes_and_resolves_a_stream() {
         );
     }
     let client = reqwest::Client::builder()
-        .user_agent(anime_levisione::provider::http::USER_AGENT)
+        .user_agent(http::USER_AGENT)
         .build()
         .expect("test client");
     let response = client
@@ -135,7 +136,7 @@ async fn streamingcommunity_audio_metadata_exposes_italian_and_english() {
     let stream = bounded(provider.resolve(&anime, &episodes[0]))
         .await
         .expect("stream");
-    let tracks = anime_levisione::audio::probe(&anime_levisione::playback::Media::Remote(stream))
+    let tracks = audio::probe(&playback::Media::Remote(stream))
         .await
         .expect("audio metadata");
     assert!(
@@ -214,7 +215,7 @@ async fn animeworld_search_lists_episodes_and_resolves_a_playable_file() {
     .await
     .expect("resolve");
     let client = reqwest::Client::builder()
-        .user_agent(anime_levisione::provider::http::USER_AGENT)
+        .user_agent(http::USER_AGENT)
         .build()
         .expect("test client");
     let response = client

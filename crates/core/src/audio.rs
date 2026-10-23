@@ -1,6 +1,9 @@
 //! Read audio-language metadata without opening a player. HLS masters need only
 //! one HTTP request; other media use ffprobe when it is installed.
-use crate::{model::clean, playback::Media, provider::http::Http};
+use crate::{
+    model::clean,
+    provider::{Media, http::Http},
+};
 use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde_json::Value;
