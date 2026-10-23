@@ -9,6 +9,24 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  commitlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install commitlint
+        run: npm install --no-save --no-audit --no-fund
+      - name: Lint commit messages
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            npx commitlint --from "${{ github.event.pull_request.base.sha }}" --to HEAD
+          else
+            npx commitlint --last
+          fi
   test:
     strategy:
       fail-fast: false

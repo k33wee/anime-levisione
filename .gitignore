@@ -2,3 +2,5 @@
 /.pi/
 *.part.mkv
 .DS_Store
+
+node_modules/

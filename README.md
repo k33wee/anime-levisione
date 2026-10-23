@@ -76,7 +76,18 @@ Click to focus a pane or select a row; use the wheel to navigate. All panes fit 
 - **Audio:** multiple languages trigger a picker. Select with arrows or a click, then `Enter`; `Esc` cancels. HLS metadata needs no extra tool; other files use optional `ffprobe`. Unavailable metadata falls back to the player default. `a` filters the catalogue, not playback audio.
 - **Players:** VLC is the default when installed; its language is chosen at startup. mpv also saves playback progress automatically. With VLC, use `m` to mark episodes watched.
 - **Settings:** `,` shows paths. Edit `config.toml` for `player`, `player_args`, download directory or provider mirrors. `--data-dir <path>` keeps a separate library.
-- **AniList:** [create an OAuth client](https://anilist.co/settings/developer), then run `anime-levisione login --client-id YOUR_ID`. Sync is opt-in; `logout` disconnects it. Private mode disables AniList entirely.
+- **AniList:** [create an OAuth client](https://anilist.co/settings/developer), then run `anime-levisione login --client-id YOUR_ID` — or log in from the TUI (command palette → *AniList login & sync status*). Sync is opt-in; `logout` disconnects it. Private mode disables AniList entirely.
+
+### Development
+
+```sh
+make help        # all targets
+make ci          # fmt + clippy + tests + commitlint (run before pushing)
+make act         # replay the GitHub workflow locally with act (needs Docker)
+make hooks       # install the .githooks commit-msg / pre-push hooks
+```
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org), checked by commitlint in CI (`make commitlint`, or `FROM=main make commitlint` for a whole branch).
 
 </details>
 
@@ -131,7 +142,18 @@ Clicca per attivare un pannello o selezionare una riga; usa la rotella per navig
 - **Audio:** se ci sono più lingue, scegli con le frecce o un clic e conferma con `Enter`; `Esc` annulla. HLS non richiede strumenti extra; per gli altri file si usa `ffprobe`, se disponibile. Senza metadati si avvia l'audio predefinito. `a` filtra il catalogo, non cambia la traccia audio.
 - **Player:** VLC è il predefinito, se installato; la lingua viene impostata all'avvio. mpv salva anche il progresso automaticamente. Con VLC, usa `m` per segnare gli episodi come visti.
 - **Impostazioni:** `,` mostra i percorsi. In `config.toml` puoi cambiare `player`, `player_args`, cartella dei download e domini alternativi. `--data-dir <percorso>` usa una libreria separata.
-- **AniList:** [crea un client OAuth](https://anilist.co/settings/developer), poi esegui `anime-levisione login --client-id IL_TUO_ID`. La sincronizzazione è facoltativa; `logout` la scollega. La modalità privata disattiva completamente AniList.
+- **AniList:** [crea un client OAuth](https://anilist.co/settings/developer), poi esegui `anime-levisione login --client-id IL_TUO_ID` — oppure accedi direttamente dalla TUI (palette comandi → *AniList login & sync status*). La sincronizzazione è facoltativa; `logout` la scollega. La modalità privata disattiva completamente AniList.
+
+### Sviluppo
+
+```sh
+make help        # tutti i target
+make ci          # fmt + clippy + test + commitlint (da lanciare prima del push)
+make act         # ripete la workflow GitHub in locale con act (serve Docker)
+make hooks       # installa gli hook .githooks (commit-msg / pre-push)
+```
+
+I commit seguono i [Conventional Commits](https://www.conventionalcommits.org), verificati da commitlint in CI (`make commitlint`, oppure `FROM=main make commitlint` per un intero branch).
 
 </details>
 

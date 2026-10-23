@@ -1,0 +1,14 @@
+{
+  "name": "anime-levisione",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "commitlint": "commitlint",
+    "commitlint:last": "commitlint --last",
+    "commitlint:range": "commitlint --from"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.8.1",
+    "@commitlint/config-conventional": "^19.8.1"
+  }
+}
