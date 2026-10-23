@@ -1,23 +1,50 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_width::UnicodeWidthStr;
 
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct Input {
     pub value: String,
     cursor: usize,
+    capacity: usize,
+}
+/// The default bound matches quick queries; long pastes want
+/// [`Input::with_capacity`].
+impl Default for Input {
+    fn default() -> Self {
+        Self {
+            value: String::new(),
+            cursor: 0,
+            capacity: 200,
+        }
+    }
 }
 impl Input {
     pub fn new(value: impl Into<String>) -> Self {
         let value = value.into();
         let cursor = value.len();
-        Self { value, cursor }
+        Self {
+            value,
+            cursor,
+            capacity: 200,
+        }
+    }
+    /// An input meant for long pastes (e.g. OAuth tokens), not quick queries.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            capacity,
+            ..Self::default()
+        }
     }
     pub fn column(&self) -> usize {
         self.value[..self.cursor].width()
     }
     pub fn insert(&mut self, text: &str) {
-        let text: String = text.chars().filter(|c| !c.is_control()).take(200).collect();
-        if self.value.chars().count() + text.chars().count() > 200 {
+        let text: String = text
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(self.capacity)
+            .collect();
+        if self.value.chars().count() + text.chars().count() > self.capacity {
             return;
         }
         self.value.insert_str(self.cursor, &text);
@@ -98,5 +125,13 @@ mod tests {
         assert_eq!(input.value, "hithere");
         input.insert(&"x".repeat(300));
         assert!(input.value.len() <= 200);
+    }
+    #[test]
+    fn long_capacity_inputs_hold_pasted_tokens() {
+        let mut input = Input::with_capacity(2000);
+        input.insert(&"x".repeat(1200));
+        assert_eq!(input.value.len(), 1200);
+        input.insert(&"y".repeat(1200));
+        assert_eq!(input.value.len(), 1200);
     }
 }

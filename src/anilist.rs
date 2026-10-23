@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, RwLock},
     time::{Duration, Instant},
 };
 
@@ -50,7 +50,7 @@ const SEARCH_QUERY: &str = "query ($q: String) {
     }
 }";
 const VIEWER_QUERY: &str = "{ Viewer { name } }";
-const LIST_QUERY: &str = "query ($id: Int) { MediaList(mediaId: $id) { id status progress } }";
+const LIST_QUERY: &str = "query ($id: Int, $user: String) { MediaList(mediaId: $id, userName: $user) { id status progress } }";
 const SAVE_MUTATION: &str = "mutation ($id: Int, $status: MediaListStatus, $progress: Int) {
     SaveMediaListEntry(mediaId: $id, status: $status, progress: $progress) { id }
 }";
@@ -250,19 +250,21 @@ struct ListEntry {
 
 pub struct Client {
     http: Http,
-    token: Option<String>,
-    user: Option<String>,
+    token: RwLock<Option<String>>,
+    user: RwLock<Option<String>>,
     next: Mutex<Instant>,
 }
 impl Client {
     pub fn open(dir: &Path) -> Result<Self> {
         let token = Token::load(dir);
         Ok(Self {
-            user: token
-                .as_ref()
-                .map(|t| t.user.clone())
-                .filter(|user| !user.is_empty()),
-            token: token.map(|t| t.token),
+            user: RwLock::new(
+                token
+                    .as_ref()
+                    .map(|t| t.user.clone())
+                    .filter(|user| !user.is_empty()),
+            ),
+            token: RwLock::new(token.map(|t| t.token)),
             http: Http::new()?,
             next: Mutex::new(Instant::now()),
         })
@@ -271,16 +273,22 @@ impl Client {
     pub fn with_token(token: String) -> Result<Self> {
         Ok(Self {
             http: Http::new()?,
-            token: Some(token),
-            user: None,
+            token: RwLock::new(Some(token)),
+            user: RwLock::new(None),
             next: Mutex::new(Instant::now()),
         })
     }
-    pub fn user(&self) -> Option<&str> {
-        self.user.as_deref()
+    /// A login completed while the app was already running: swap the live
+    /// credentials without restarting. Sync starts using them immediately.
+    pub fn adopt(&self, token: String, user: String) {
+        *self.token.write().expect("anilist token lock") = Some(token);
+        *self.user.write().expect("anilist user lock") = (!user.is_empty()).then_some(user);
+    }
+    pub fn user(&self) -> Option<String> {
+        self.user.read().expect("anilist user lock").clone()
     }
     pub fn logged_in(&self) -> bool {
-        self.token.is_some()
+        self.token.read().expect("anilist token lock").is_some()
     }
     /// Space requests apart so bursts of lookups cannot trip the rate limit.
     async fn pace(&self) {
@@ -310,7 +318,9 @@ impl Client {
         if authed {
             let token = self
                 .token
-                .as_deref()
+                .read()
+                .expect("anilist token lock")
+                .clone()
                 .context("AniList: log in first with `anime-levisione login`")?;
             request = request.bearer_auth(token);
         }
@@ -356,8 +366,15 @@ impl Client {
             .context("AniList did not return your profile")
     }
     async fn list_entry(&self, media_id: i64) -> Result<Option<ListEntry>> {
+        // AniList intermittently 500s on MediaList for some media when the
+        // viewer is inferred from the token alone; naming them explicitly
+        // sidesteps it. The name is cached from login; fetch it if missing.
+        let user = match self.user() {
+            Some(user) => user,
+            None => self.viewer().await?,
+        };
         let data = self
-            .graphql(LIST_QUERY, json!({ "id": media_id }), true)
+            .graphql(LIST_QUERY, json!({ "id": media_id, "user": user }), true)
             .await?;
         let entry = &data["MediaList"];
         if entry.is_null() {

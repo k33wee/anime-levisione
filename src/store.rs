@@ -178,16 +178,11 @@ pub struct Store {
     pub dir: PathBuf,
     pub config: Config,
     pub library: Library,
-    _lock: File,
+    _lock: Option<File>,
 }
 impl Store {
     pub fn open(dir: Option<PathBuf>) -> Result<Self> {
-        let dir = dir
-            .or_else(|| {
-                directories::ProjectDirs::from("dev", "keewee", "anime-levisione")
-                    .map(|d| d.config_dir().to_path_buf())
-            })
-            .context("Cannot locate configuration directory; pass --data-dir")?;
+        let (dir, config, library) = Self::load(dir)?;
         fs::create_dir_all(&dir).with_context(|| format!("Cannot create {}", dir.display()))?;
         let lock = OpenOptions::new()
             .create(true)
@@ -198,6 +193,33 @@ impl Store {
         FileExt::try_lock(&lock).context(
             "Another anime-levisione instance is using this library; use a different --data-dir",
         )?;
+        Ok(Self {
+            dir,
+            config,
+            library,
+            _lock: Some(lock),
+        })
+    }
+    /// Read-only view: same config and library as `open`, but no lock is
+    /// taken, so one-shot commands like AniList `sync` work even while the
+    /// TUI is running. `save` refuses rather than racing the TUI.
+    pub fn open_readonly(dir: Option<PathBuf>) -> Result<Self> {
+        let (dir, config, library) = Self::load(dir)?;
+        Ok(Self {
+            dir,
+            config,
+            library,
+            _lock: None,
+        })
+    }
+    fn load(dir: Option<PathBuf>) -> Result<(PathBuf, Config, Library)> {
+        let dir = dir
+            .or_else(|| {
+                directories::ProjectDirs::from("dev", "keewee", "anime-levisione")
+                    .map(|d| d.config_dir().to_path_buf())
+            })
+            .context("Cannot locate configuration directory; pass --data-dir")?;
+        fs::create_dir_all(&dir).with_context(|| format!("Cannot create {}", dir.display()))?;
         let config_path = dir.join("config.toml");
         let config = match fs::read_to_string(&config_path) {
             Ok(text) => toml::from_str(&text).with_context(|| {
@@ -227,19 +249,27 @@ impl Store {
         if library.version > 1 {
             bail!("This library was written by a newer anime-levisione; update before opening it");
         }
-        Ok(Self {
-            dir,
-            config,
-            library,
-            _lock: lock,
-        })
+        Ok((dir, config, library))
     }
     pub fn save(&self, library: &Library) -> Result<()> {
+        if self._lock.is_none() {
+            bail!("This store is read-only; the TUI owns the library right now");
+        }
         let mut library = library.clone();
         library.version = 1;
         atomic_write(
             &self.dir.join("library.json"),
             &serde_json::to_vec_pretty(&library)?,
+        )
+    }
+    /// Persist config.toml (e.g. a client id entered in the TUI login form).
+    pub fn save_config(&self, config: &Config) -> Result<()> {
+        if self._lock.is_none() {
+            bail!("This store is read-only; the TUI owns the library right now");
+        }
+        atomic_write(
+            &self.dir.join("config.toml"),
+            toml::to_string_pretty(config)?.as_bytes(),
         )
     }
 }

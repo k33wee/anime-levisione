@@ -73,6 +73,9 @@ enum Commands {
         #[arg(long)]
         token: Option<String>,
     },
+    /// Catch up AniList with the saved watchlist and watched progress
+    /// (activity recorded before login; remote entries are never downgraded)
+    Sync,
     /// Remove the stored AniList token (metadata stays anonymous)
     Logout,
 }
@@ -82,8 +85,13 @@ async fn main() -> Result<()> {
     if cli.demo && cli.command.is_some() {
         bail!("--demo is a TUI preview; do not combine it with subcommands");
     }
+    // `sync` only reads the library and pushes to AniList: it must not need
+    // the exclusive lock, so it can run while the TUI is open.
+    let one_shot_readonly = matches!(cli.command, Some(Commands::Sync));
     let store = if cli.demo {
         None
+    } else if one_shot_readonly {
+        Some(Store::open_readonly(cli.data_dir)?)
     } else {
         Some(Store::open(cli.data_dir)?)
     };
@@ -111,6 +119,9 @@ async fn main() -> Result<()> {
             .transpose()?
     };
     if let Some(command) = cli.command {
+        if let Commands::Sync = command {
+            return sync(store.as_ref().context("No config directory")?).await;
+        }
         let registry = registry.context("No providers configured")?;
         return match command {
             Commands::Search {
@@ -135,6 +146,7 @@ async fn main() -> Result<()> {
                 .await
             }
             Commands::Logout => logout(store.as_ref().context("No config directory")?),
+            Commands::Sync => unreachable!("handled before the registry is needed"),
         };
     }
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
@@ -151,9 +163,7 @@ async fn main() -> Result<()> {
         .map(|s| s.dir.display().to_string())
         .unwrap_or_else(|| "Demo (not saved)".into());
     let mut app = App::new(config, library, path, cli.demo);
-    app.anilist_user = anilist
-        .as_ref()
-        .and_then(|client| client.user().map(str::to_owned));
+    app.anilist_user = anilist.as_ref().and_then(|client| client.user());
     if cli.demo {
         demo::populate(&mut app);
     }
@@ -541,6 +551,71 @@ impl Effects {
                         let _ = tx.send(Message::Tracked(result));
                     }));
                 }
+                Action::OpenAniListAuth(client_id) => {
+                    let url = anilist::authorize_url(client_id);
+                    let outcome =
+                        open_browser(&url).map_err(|e| format!("could not open a browser: {e:#}"));
+                    if let Err(error) = outcome {
+                        let _ = self.tx.send(Message::Login(Err(error)));
+                    }
+                }
+                Action::AniListLogin { client_id, token } => {
+                    let token = extract_token(&token);
+                    // Synchronous bookkeeping first, so the spawned future
+                    // only owns clones (borrow checker cannot follow `self`
+                    // across the await points).
+                    if let Some(store) = &self.store
+                        && client_id != 0
+                        && client_id != store.config.anilist_client_id
+                    {
+                        let mut config = store.config.clone();
+                        config.anilist_client_id = client_id;
+                        let _ = store.save_config(&config);
+                    }
+                    let dir = self.store.as_ref().map(|s| s.dir.clone());
+                    let live = self.anilist.clone();
+                    let tx = self.tx.clone();
+                    tokio::spawn(async move {
+                        if token.is_empty() {
+                            let _ = tx.send(Message::Login(Err("empty token".into())));
+                            return;
+                        }
+                        // Verify through a scratch client so a bad token never
+                        // disturbs the live one, then store and adopt it.
+                        let user = match anilist::Client::with_token(token.clone()) {
+                            Ok(client) => client.viewer().await.map_err(|e| format!("{e:#}")),
+                            Err(e) => Err(format!("{e:#}")),
+                        };
+                        let user = match user {
+                            Ok(user) => user,
+                            Err(error) => {
+                                let _ = tx.send(Message::Login(Err(error)));
+                                return;
+                            }
+                        };
+                        let stored = std::time::SystemTime::now()
+                            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        if let Some(dir) = &dir {
+                            let persist = anilist::Token {
+                                user: user.clone(),
+                                token: token.clone(),
+                                stored,
+                            };
+                            if let Err(e) = persist.save(dir) {
+                                let _ = tx.send(Message::Login(Err(format!(
+                                    "token verified but not saved: {e:#}"
+                                ))));
+                                return;
+                            }
+                        }
+                        if let Some(client) = &live {
+                            client.adopt(token, user.clone());
+                        }
+                        let _ = tx.send(Message::Login(Ok(user)));
+                    });
+                }
             }
         }
         false
@@ -623,8 +698,12 @@ async fn login(client_id: Option<u32>, token: Option<String>, store: &Store) -> 
                 println!("   (could not open a browser automatically: {e:#})");
             }
             println!("2. Copy the token shown on the authorization page.");
-            println!("   Pasting the whole https://anilist.co/...#access_token=... URL also works;");
-            println!("   if it wraps over several lines, keep going and finish with an empty line.");
+            println!(
+                "   Pasting the whole https://anilist.co/...#access_token=... URL also works;"
+            );
+            println!(
+                "   if it wraps over several lines, keep going and finish with an empty line."
+            );
             read_pasted_token()?
         }
     };
@@ -709,6 +788,60 @@ fn open_browser(url: &str) -> Result<()> {
         .args(&args)
         .spawn()
         .with_context(|| format!("Cannot launch {program}"))?;
+    Ok(())
+}
+/// Backfill the saved watchlist and watched progress to AniList. Runs the
+/// same `track` path the TUI uses — so remote entries are never downgraded —
+/// and reads `library.json` without the lock, so it can run while the TUI is
+/// open.
+async fn sync(store: &Store) -> Result<()> {
+    if store.config.private {
+        bail!("AniList sync is disabled while private mode is on in config.toml");
+    }
+    let client = anilist::Client::open(&store.dir)?;
+    if !client.logged_in() {
+        bail!("Not logged in — run `anime-levisione login` first");
+    }
+    println!(
+        "Syncing to AniList as {} …",
+        client.user().unwrap_or_else(|| "your account".into())
+    );
+    let library: Library = match std::fs::read(store.dir.join("library.json")) {
+        Ok(bytes) => serde_json::from_slice(&bytes).context("Invalid library.json")?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Library::default(),
+        Err(e) => return Err(e.into()),
+    };
+    let mut failures = 0u32;
+    for anime in &library.watchlist {
+        match client
+            .track(anime, anilist::TrackEvent::Watchlist { added: true })
+            .await
+        {
+            Ok(text) => println!("  {text}"),
+            Err(e) => {
+                failures += 1;
+                eprintln!("  {e:#}");
+            }
+        }
+    }
+    for entry in &library.history {
+        let event = anilist::TrackEvent::Watched {
+            number: entry.last_episode.clone(),
+            total: entry.anime.episodes,
+        };
+        match client.track(&entry.anime, event).await {
+            Ok(text) => println!("  {text}"),
+            Err(e) => {
+                failures += 1;
+                eprintln!("  {e:#}");
+            }
+        }
+    }
+    if failures == 0 {
+        println!("Done.");
+    } else {
+        println!("{failures} title(s) could not be synced (see above).");
+    }
     Ok(())
 }
 async fn search_cli(
@@ -847,7 +980,12 @@ mod tests {
         assert_eq!(extract_token(token), token);
         // Same token wrapped over three pasted lines.
         assert_eq!(
-            extract_token(&format!("{}\n{}\n{}\n", &token[..20], &token[20..40], &token[40..])),
+            extract_token(&format!(
+                "{}\n{}\n{}\n",
+                &token[..20],
+                &token[20..40],
+                &token[40..]
+            )),
             token
         );
         // Full redirect URL, URL-fragment style.

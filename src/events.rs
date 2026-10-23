@@ -18,6 +18,9 @@ pub enum Message {
     },
     /// Outcome of mirroring a watchlist/progress change to AniList.
     Tracked(Result<String, String>),
+    /// Outcome of a TUI AniList login: `Ok(username)` once the token is
+    /// verified, stored, and adopted by the live client.
+    Login(Result<String, String>),
     Catalog {
         generation: u64,
         provider: ProviderId,

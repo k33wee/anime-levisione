@@ -116,6 +116,7 @@ pub enum Modal {
     Diagnostics,
     Quit,
     Audio,
+    Login,
 }
 
 pub struct AudioPrompt {
@@ -156,6 +157,13 @@ pub enum Action {
         anime: Anime,
         event: TrackEvent,
     },
+    /// Verify and store an AniList token entered in the TUI login form.
+    AniListLogin {
+        client_id: u32,
+        token: String,
+    },
+    /// Open the AniList authorization page for a client id from the form.
+    OpenAniListAuth(u32),
     Save,
     /// Library save for high-frequency player progress updates; debounced by the
     /// effects layer instead of fsync-ing on every ~2 s report.
@@ -220,6 +228,11 @@ pub struct App {
     pub playback_id: u64,
     pub command_input: Input,
     pub command_selected: usize,
+    /// AniList login form: client id + pasted token (Tab switches field).
+    pub login_client_id: Input,
+    pub login_token: Input,
+    pub login_field: u8,
+    pub login_busy: bool,
     pub notice: String,
     pub notice_error: bool,
     pub playing: bool,
@@ -240,6 +253,11 @@ pub struct App {
 }
 impl App {
     pub fn new(config: Config, library: Library, data_path: String, demo: bool) -> Self {
+        let client_id = if config.anilist_client_id > 0 {
+            config.anilist_client_id.to_string()
+        } else {
+            String::new()
+        };
         Self {
             config,
             library,
@@ -271,6 +289,10 @@ impl App {
             playback_id: 0,
             command_input: Input::default(),
             command_selected: 0,
+            login_client_id: Input::new(client_id),
+            login_token: Input::with_capacity(2000),
+            login_field: 1,
+            login_busy: false,
             notice: "Find your next episode. Press / to search, ? for help.".into(),
             notice_error: false,
             playing: false,
@@ -684,6 +706,25 @@ impl App {
                 Ok(text) => self.notify(text, false),
                 Err(error) => self.notify(error, true),
             },
+            Message::Login(result) => {
+                self.login_busy = false;
+                match result {
+                    Ok(user) => {
+                        self.anilist_user = Some(user.clone());
+                        self.anilist_error = None;
+                        if let Ok(id) = self.login_client_id.value.trim().parse::<u32>() {
+                            self.config.anilist_client_id = id;
+                        }
+                        self.modal = None;
+                        self.notify(format!("AniList: logged in as {user}"), false);
+                    }
+                    Err(error) => {
+                        self.notify(format!("AniList login failed: {error}"), true);
+                        // Keep the form open so the token can be re-pasted.
+                        self.login_token = Input::with_capacity(2000);
+                    }
+                }
+            }
             Message::Catalog {
                 generation,
                 provider,
@@ -873,7 +914,22 @@ impl App {
         vec![]
     }
     pub fn paste(&mut self, text: &str) {
-        if self.modal.is_some() && self.modal != Some(Modal::Commands) {
+        if self.modal.is_some()
+            && self.modal != Some(Modal::Commands)
+            && self.modal != Some(Modal::Login)
+        {
+            return;
+        }
+        if self.modal == Some(Modal::Login) {
+            if self.login_busy {
+                return;
+            }
+            let input = if self.login_field == 0 {
+                &mut self.login_client_id
+            } else {
+                &mut self.login_token
+            };
+            input.insert(text);
             return;
         }
         if self.modal == Some(Modal::Commands) {
@@ -916,9 +972,67 @@ impl App {
             }
             return vec![];
         }
+        if self.modal == Some(Modal::Login) {
+            if self.login_busy {
+                return vec![];
+            }
+            match key.code {
+                K::Esc => {
+                    self.close_modal();
+                    return vec![];
+                }
+                K::Tab | K::Down => {
+                    self.login_field = 1 - self.login_field;
+                    return vec![];
+                }
+                K::BackTab | K::Up => {
+                    self.login_field = 1 - self.login_field;
+                    return vec![];
+                }
+                K::Enter if self.login_field == 0 => {
+                    self.login_field = 1;
+                    return vec![];
+                }
+                K::Enter => {
+                    if self.login_token.value.trim().is_empty() {
+                        self.notify("Paste your AniList token first", true);
+                        return vec![];
+                    }
+                    let client_id = self.login_client_id.value.trim().parse().unwrap_or(0);
+                    if client_id == 0 {
+                        self.notify(
+                            "Enter your AniList client id (anilist.co/settings/developer)",
+                            true,
+                        );
+                        self.login_field = 0;
+                        return vec![];
+                    }
+                    self.login_busy = true;
+                    return vec![Action::AniListLogin {
+                        client_id,
+                        token: self.login_token.value.clone(),
+                    }];
+                }
+                K::Char('o') if self.login_field != 0 => {
+                    if let Ok(id) = self.login_client_id.value.trim().parse::<u32>() {
+                        return vec![Action::OpenAniListAuth(id)];
+                    }
+                }
+                _ => {}
+            }
+            let input = if self.login_field == 0 {
+                &mut self.login_client_id
+            } else {
+                &mut self.login_token
+            };
+            input.key(key);
+            return vec![];
+        }
         if let Some(modal) = self.modal {
             if key.code == K::Esc
-                || (modal != Modal::Commands && matches!(key.code, K::Char('q') | K::Char('?')))
+                || (modal != Modal::Commands
+                    && modal != Modal::Login
+                    && matches!(key.code, K::Char('q') | K::Char('?')))
             {
                 self.close_modal();
                 return vec![];
@@ -1254,18 +1368,22 @@ impl App {
             14 => return self.key(KeyEvent::new(K::Char('x'), M::CONTROL)),
             15 => return self.key(KeyEvent::new(K::Char('d'), M::CONTROL)),
             16 => {
-                self.notify(
-                    if self.anilist_user.is_some() {
+                if self.anilist_user.is_some() {
+                    self.notify(
                         format!(
                             "AniList: syncing as {} · log out with `anime-levisione logout`",
                             self.anilist_user.clone().unwrap_or_default()
-                        )
-                    } else {
-                        "AniList: run `anime-levisione login` in your shell to sync your list"
-                            .into()
-                    },
-                    false,
-                );
+                        ),
+                        false,
+                    );
+                    return vec![];
+                }
+                self.login_field = if self.login_client_id.value.trim().parse::<u32>().is_ok() {
+                    1
+                } else {
+                    0
+                };
+                self.modal = Some(Modal::Login);
                 return vec![];
             }
             _ => K::Char('q'),
@@ -1581,6 +1699,55 @@ mod tests {
         });
         assert!(app.statuses.is_empty());
         assert!(app.catalog.is_empty());
+    }
+    #[test]
+    fn anilist_login_form_opens_submits_and_reports_outcomes() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), true);
+        // Command palette entry opens the form when logged out, keeps the
+        // status notification when already syncing.
+        app.anilist_user = None;
+        assert!(app.execute_command(16).is_empty());
+        assert_eq!(app.modal, Some(Modal::Login));
+        app.anilist_user = Some("viewer".into());
+        app.key(K::Esc.into()); // close the form first
+        assert!(app.execute_command(16).is_empty());
+        assert_eq!(app.modal, None, "status peek must not reopen the form");
+        app.anilist_user = None;
+        app.execute_command(16);
+        // A whole redirect URL pasted into the token field survives intact.
+        app.key(K::Tab.into()); // move from the client id to the token field
+        let url =
+            "https://anilist.co/api/v2/oauth/paste#access_token=tok.veryLong&token_type=Bearer";
+        app.paste(url);
+        assert_eq!(app.login_token.value, url);
+        // Submit without a client id complains and focuses that field.
+        app.key(K::Enter.into());
+        assert!(app.login_field == 0 && !app.login_busy);
+        app.login_client_id.insert("54777");
+        // Enter on the client id moves to the token; Enter there submits.
+        app.key(K::Enter.into());
+        assert_eq!(app.login_field, 1);
+        let actions = app.key(K::Enter.into());
+        match actions.first() {
+            Some(Action::AniListLogin { client_id, token }) => {
+                assert_eq!(*client_id, 54777);
+                assert_eq!(token.as_str(), url);
+            }
+            other => panic!("expected a login action, got {}", other.is_some()),
+        }
+        assert!(app.login_busy);
+        // Failure keeps the form open and clears the bad token.
+        app.message(Message::Login(Err("rejected".into())));
+        assert_eq!(app.modal, Some(Modal::Login));
+        assert!(app.login_token.value.is_empty());
+        assert!(!app.login_busy);
+        // Success closes it, records the account, remembers the client id.
+        app.login_token.insert("tok");
+        app.key(K::Enter.into());
+        app.message(Message::Login(Ok("k33wee".into())));
+        assert_eq!(app.modal, None);
+        assert_eq!(app.anilist_user.as_deref(), Some("k33wee"));
+        assert_eq!(app.config.anilist_client_id, 54777);
     }
     #[test]
     fn typing_shortcuts_in_search_does_not_quit_or_change_tabs() {

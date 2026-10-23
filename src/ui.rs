@@ -1,5 +1,7 @@
 use crate::{
+    anilist,
     app::{App, COMMANDS, Focus, Modal, Pane, PaneRegion, View},
+    input::Input,
     model::{Anime, ProviderId},
 };
 use ratatui::{
@@ -9,6 +11,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
+use unicode_width::UnicodeWidthStr;
 
 const ACTIVE: Color = Color::Green;
 const MUTED: Color = Color::DarkGray;
@@ -717,6 +720,7 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
         Modal::Commands => 24,
         Modal::Diagnostics => 18,
         Modal::Help => 30,
+        Modal::Login => 12,
         Modal::Audio => app
             .audio_prompt
             .as_ref()
@@ -736,6 +740,7 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
         Modal::Commands => "Commands · type to filter · Esc to close",
         Modal::Settings => "Settings & paths · Esc to close",
         Modal::Diagnostics => "Provider diagnostics · Esc to close",
+        Modal::Login => "AniList login · Tab field · Enter login · o open page · Esc cancel",
         Modal::Quit => "Quit anime-levisione?",
         Modal::Audio => "Choose audio language · ↑/↓ select · Enter play · Esc cancel",
     };
@@ -784,6 +789,87 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
         );
         return;
     }
+    if modal == Modal::Login {
+        let client_id = app.login_client_id.value.trim().parse::<u32>().unwrap_or(0);
+        let url = if client_id > 0 {
+            anilist::authorize_url(client_id)
+        } else {
+            "enter your client id — create one at anilist.co/settings/developer".into()
+        };
+        let rows = Layout::vertical([
+            C::Length(1),
+            C::Length(1),
+            C::Length(1),
+            C::Length(1),
+            C::Length(1),
+            C::Length(1),
+            C::Length(1),
+            C::Min(0),
+        ])
+        .split(inner);
+        frame.render_widget(
+            Paragraph::new("Authorize URL (o opens it in your browser):")
+                .style(Style::default().fg(ACCENT)),
+            rows[0],
+        );
+        frame.render_widget(
+            Paragraph::new(url.clone())
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(Color::Gray)),
+            rows[1],
+        );
+        frame.render_widget(Paragraph::new(""), rows[2]);
+        let field = |frame: &mut Frame, area: Rect, label: &str, input: &Input, focused: bool| {
+            let style = if focused {
+                Style::default().fg(ACCENT)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let label_width = 12;
+            let available = area.width.saturating_sub(label_width as u16) as usize;
+            let value = input.value.clone();
+            let shown: String = if value.width() > available {
+                value
+                    .chars()
+                    .skip(value.chars().count().saturating_sub(available))
+                    .collect()
+            } else {
+                value
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(format!("{label:<label_width$}"), style),
+                    Span::raw(shown),
+                    Span::styled(if focused { "│" } else { "" }, style),
+                ])),
+                area,
+            );
+        };
+        field(
+            frame,
+            rows[3],
+            "Client ID:",
+            &app.login_client_id,
+            app.login_field == 0,
+        );
+        field(
+            frame,
+            rows[5],
+            "Token:",
+            &app.login_token,
+            app.login_field == 1,
+        );
+        let hint = if app.login_busy {
+            "Verifying token with AniList …"
+        } else {
+            "Paste works: whole redirect URL or wrapped token · Tab switches field"
+        };
+        frame.render_widget(
+            Paragraph::new(hint).style(Style::default().fg(ACCENT)),
+            rows[7],
+        );
+        return;
+    }
     if modal == Modal::Commands {
         let rows = Layout::vertical([C::Length(2), C::Min(1)]).split(inner);
         frame.render_widget(
@@ -817,6 +903,8 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
         return;
     }
     let lines = match modal {
+        // The login form is fully drawn by its own branch above.
+        Modal::Login => vec![],
         Modal::Help => vec![
             "NAVIGATION",
             "  / or 1       Search anime (350 ms debounce, all sources)",
@@ -840,6 +928,7 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
             "  r            Refresh results or retry focused episodes",
             "  P            Toggle private mode (no automatic history)",
             "  : / Ctrl+p   Command palette   , settings   ! diagnostics",
+            "  AniList login & sync status live in the command palette",
             "  q / Ctrl+c   Quit (asks before stopping active jobs)",
             "",
             "ABOUT",
@@ -1304,6 +1393,7 @@ mod tests {
                 Some(Modal::Diagnostics),
                 Some(Modal::Quit),
                 Some(Modal::Audio),
+                Some(Modal::Login),
             ] {
                 app.modal = modal;
                 let mut terminal = Terminal::new(TestBackend::new(width, height))?;
