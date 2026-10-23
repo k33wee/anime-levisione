@@ -152,7 +152,6 @@ pub async fn play(
     request: PlayRequest,
     tx: mpsc::UnboundedSender<Message>,
 ) -> Result<()> {
-    let mpv = is_mpv(&config);
     let temp = tempfile::Builder::new()
         .prefix("anime-levisione-")
         .tempdir()?;
@@ -181,7 +180,7 @@ pub async fn play(
     let stderr = child.stderr.take().context("Player stderr unavailable")?;
     let diagnostic = tokio::spawn(diagnostic_tail(stderr));
     #[cfg(unix)]
-    let monitor = if mpv {
+    let monitor = if is_mpv(&config) {
         Some(tokio::spawn(monitor(
             socket,
             anime,
