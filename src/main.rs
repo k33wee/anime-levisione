@@ -69,6 +69,9 @@ enum Commands {
         /// AniList OAuth client id (else anilist_client_id from config.toml)
         #[arg(long)]
         client_id: Option<u32>,
+        /// Non-interactive: the access token (or the whole redirect URL)
+        #[arg(long)]
+        token: Option<String>,
     },
     /// Remove the stored AniList token (metadata stays anonymous)
     Logout,
@@ -123,8 +126,13 @@ async fn main() -> Result<()> {
                 )
                 .await
             }
-            Commands::Login { client_id } => {
-                login(client_id, store.as_ref().context("No config directory")?).await
+            Commands::Login { client_id, token } => {
+                login(
+                    client_id,
+                    token,
+                    store.as_ref().context("No config directory")?,
+                )
+                .await
             }
             Commands::Logout => logout(store.as_ref().context("No config directory")?),
         };
@@ -591,7 +599,7 @@ impl Effects {
         self.rescan.take();
     }
 }
-async fn login(client_id: Option<u32>, store: &Store) -> Result<()> {
+async fn login(client_id: Option<u32>, token: Option<String>, store: &Store) -> Result<()> {
     let client_id = client_id.unwrap_or(store.config.anilist_client_id);
     if client_id == 0 {
         println!("AniList login needs a client id from https://anilist.co/settings/developer");
@@ -604,24 +612,26 @@ async fn login(client_id: Option<u32>, store: &Store) -> Result<()> {
         return Ok(());
     }
     let url = anilist::authorize_url(client_id);
-    println!("1. Open this URL in a browser and authorize anime-levisione:");
-    println!("   {url}");
-    if let Err(e) = open_browser(&url) {
-        println!("   (could not open a browser automatically: {e:#})");
-    }
-    println!("2. Copy the token shown on the authorization page.");
-    print!("3. Paste the token here: ");
-    use std::io::Write as _;
-    io::stdout().flush()?;
-    let mut pasted = String::new();
-    while pasted.trim().is_empty() {
-        pasted.clear();
-        io::stdin().read_line(&mut pasted)?;
-        if pasted.trim().is_empty() {
-            println!("Token cannot be empty; paste it again (Ctrl+c to abort):");
+    let pasted = match token {
+        // Non-interactive path: `--token` accepts the bare token or the
+        // whole redirect URL, wrapped however the caller has it.
+        Some(pasted) => pasted,
+        None => {
+            println!("1. Open this URL in a browser and authorize anime-levisione:");
+            println!("   {url}");
+            if let Err(e) = open_browser(&url) {
+                println!("   (could not open a browser automatically: {e:#})");
+            }
+            println!("2. Copy the token shown on the authorization page.");
+            println!("   Pasting the whole https://anilist.co/...#access_token=... URL also works;");
+            println!("   if it wraps over several lines, keep going and finish with an empty line.");
+            read_pasted_token()?
         }
+    };
+    let token = extract_token(&pasted);
+    if token.is_empty() {
+        bail!("AniList token cannot be empty — paste the token or the full redirect URL");
     }
-    let token = pasted.trim().to_owned();
     let user = anilist::Client::with_token(token.clone())?
         .viewer()
         .await
@@ -637,6 +647,45 @@ async fn login(client_id: Option<u32>, store: &Store) -> Result<()> {
     .save(&store.dir)?;
     println!("Logged in as {user}. Watchlist adds and watched episodes sync from the TUI.");
     Ok(())
+}
+/// Read the pasted token from stdin. Long tokens (and whole redirect URLs)
+/// often arrive wrapped over several lines; every line is kept until a blank
+/// line (interactive) or EOF (pipe) closes the paste. A full redirect URL is
+/// complete on its own, so reading stops as soon as one is recognized.
+fn read_pasted_token() -> Result<String> {
+    use std::io::Write as _;
+    print!("3. Paste the token here: ");
+    io::stdout().flush()?;
+    let interactive = io::stdin().is_terminal();
+    let mut pasted = String::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read = io::stdin().read_line(&mut line)?;
+        if line.trim().is_empty() || read == 0 {
+            if !pasted.is_empty() {
+                return Ok(pasted);
+            }
+            if read == 0 && !interactive {
+                bail!("No token received on stdin");
+            }
+            println!("Token cannot be empty; paste it again (Ctrl+c to abort):");
+            continue;
+        }
+        pasted.push_str(line.trim());
+        if pasted.contains("token_type=") {
+            return Ok(pasted);
+        }
+    }
+}
+/// Reduce whatever was pasted — bare token, wrapped over lines, or the full
+/// `...#access_token=<token>&token_type=...` redirect URL — to the token.
+fn extract_token(pasted: &str) -> String {
+    let joined: String = pasted.split_whitespace().collect();
+    match joined.split_once("access_token=") {
+        Some((_, tail)) => tail.split('&').next().unwrap_or_default().to_owned(),
+        None => joined,
+    }
 }
 fn logout(store: &Store) -> Result<()> {
     let path = anilist::Token::path(&store.dir);
@@ -790,6 +839,35 @@ async fn doctor(config: &Config, registry: &Registry, store: &Store) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_token_accepts_bare_tokens_wrapped_lines_and_redirect_urls() {
+        let token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.veryLongPadding";
+        // Bare token, single line.
+        assert_eq!(extract_token(token), token);
+        // Same token wrapped over three pasted lines.
+        assert_eq!(
+            extract_token(&format!("{}\n{}\n{}\n", &token[..20], &token[20..40], &token[40..])),
+            token
+        );
+        // Full redirect URL, URL-fragment style.
+        assert_eq!(
+            extract_token(&format!(
+                "https://anilist.co/api/v2/oauth/paste#access_token={token}&token_type=Bearer&expires_in=315360000"
+            )),
+            token
+        );
+        // Redirect URL itself wrapped mid-token.
+        assert_eq!(
+            extract_token(&format!(
+                "https://anilist.co/api/v2/oauth/paste#access_token={}\n{}&token_type=Bearer",
+                &token[..30],
+                &token[30..]
+            )),
+            token
+        );
+        assert_eq!(extract_token("   \n  "), "");
+    }
 
     #[tokio::test]
     async fn one_audio_language_bypasses_the_picker() {
