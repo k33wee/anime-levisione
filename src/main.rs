@@ -3,7 +3,10 @@ use anyhow::{Context, Result, bail};
 use app::{Action, App};
 use clap::{Parser, Subcommand};
 use crossterm::{
-    event::{DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyEventKind},
+    event::{
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, EventStream, KeyEventKind, MouseButton, MouseEventKind,
+    },
     execute,
 };
 use events::Message;
@@ -175,6 +178,8 @@ async fn main() -> Result<()> {
         detail: None,
         player: None,
         download: None,
+        rescan: None,
+        rescan_pending: false,
         demo_catalog: app.discovered.clone(),
         progress_dirty: false,
         last_save: Instant::now(),
@@ -194,28 +199,53 @@ async fn main() -> Result<()> {
     effects.apply(initial, &mut app);
     let mut terminal = ratatui::try_init()?;
     let _restore = TerminalRestore;
-    execute!(io::stdout(), EnableBracketedPaste)?;
+    execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
     let mut input = EventStream::new();
     let mut interval = tokio::time::interval(Duration::from_millis(80));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let result = async {
+        let mut dirty = true;
         loop {
-            terminal.draw(|frame| ui::draw(frame, &mut app))?;
+            if dirty {
+                terminal.draw(|frame| ui::draw(frame, &mut app))?;
+                dirty = false;
+            }
             let actions = tokio::select! {
-                _ = interval.tick() => app.on_tick(),
-                message = rx.recv() => match message { Some(message) => app.message(message), None => break },
+                _ = interval.tick() => {
+                    // Offline details can be populated by a debounce without
+                    // emitting an effect, so check pending work before ticking.
+                    let pending = app.needs_tick_redraw();
+                    let actions = app.on_tick();
+                    dirty = pending || !actions.is_empty();
+                    actions
+                },
+                message = rx.recv() => match message {
+                    Some(message) => { dirty = true; app.message(message) },
+                    None => break,
+                },
                 event = input.next() => match event {
-                    Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => app.key(key),
-                    Some(Ok(Event::Paste(text))) => { app.paste(&text); vec![] },
-                    Some(Ok(Event::Resize(_, _))) => vec![],
+                    Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => {
+                        dirty = true;
+                        app.key(key)
+                    },
+                    Some(Ok(Event::Paste(text))) => { dirty = true; app.paste(&text); vec![] },
+                    Some(Ok(Event::Mouse(mouse))) if matches!(mouse.kind,
+                        MouseEventKind::Down(MouseButton::Left) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                    ) => { dirty = true; app.mouse(mouse) },
+                    Some(Ok(Event::Resize(_, _))) => { dirty = true; vec![] },
                     Some(Err(e)) => return Err(anyhow::Error::from(e)),
                     None => break,
                     _ => vec![],
                 },
-                _ = tokio::signal::ctrl_c() => app.key(crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Char('c'), crossterm::event::KeyModifiers::CONTROL)),
+                _ = tokio::signal::ctrl_c() => {
+                    dirty = true;
+                    app.key(crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Char('c'), crossterm::event::KeyModifiers::CONTROL))
+                },
             };
             if effects.apply(actions, &mut app) {
                 break;
             }
+            effects.start_pending_rescan(&mut app);
             effects.flush_progress(&mut app);
         }
         Ok::<_, anyhow::Error>(())
@@ -249,10 +279,34 @@ async fn catalog(provider: &Provider, query: &Option<String>) -> Result<Vec<Anim
         None => bounded(provider.latest()).await,
     }
 }
+/// The player task holds the resolved URL while the UI asks for a language.
+/// Cancelling/aborting drops the receiver; stale prompts cannot launch a player.
+async fn choose_audio(
+    request_id: u64,
+    tracks: Vec<anime_levisione::audio::AudioTrack>,
+    tx: &mpsc::UnboundedSender<Message>,
+) -> Result<Option<anime_levisione::audio::AudioTrack>> {
+    if tracks.len() <= 1 {
+        return Ok(None);
+    }
+    let (reply, receive) = tokio::sync::oneshot::channel();
+    tx.send(Message::ChooseAudio {
+        request_id,
+        tracks,
+        reply,
+    })
+    .map_err(|_| anyhow::anyhow!("Audio selection UI closed"))?;
+    let track = receive
+        .await
+        .context("Audio selection cancelled")?
+        .context("Audio selection cancelled")?;
+    Ok(Some(track))
+}
+
 struct TerminalRestore;
 impl Drop for TerminalRestore {
     fn drop(&mut self) {
-        let _ = execute!(io::stdout(), DisableBracketedPaste);
+        let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
         ratatui::restore();
     }
 }
@@ -267,6 +321,8 @@ struct Effects {
     detail: Option<JoinHandle<()>>,
     player: Option<JoinHandle<()>>,
     download: Option<JoinHandle<()>>,
+    rescan: Option<std::thread::JoinHandle<()>>,
+    rescan_pending: bool,
     demo_catalog: Vec<model::Anime>,
     progress_dirty: bool,
     last_save: Instant,
@@ -286,18 +342,8 @@ impl Effects {
                 Action::SaveProgress => self.progress_dirty = true,
                 Action::Rescan => {
                     if !app.demo {
-                        match playback::scan_offline(&app.config.download_dir) {
-                            Ok(offline) => {
-                                app.offline = offline;
-                                if app.view == app::View::Offline {
-                                    app.details.clear();
-                                    app.rebuild();
-                                }
-                            }
-                            Err(e) => {
-                                app.notify(format!("Cannot read offline library: {e:#}"), true)
-                            }
-                        }
+                        self.rescan_pending = true;
+                        self.start_pending_rescan(app);
                     }
                 }
                 Action::CancelPlayback => abort(&mut self.player),
@@ -372,6 +418,7 @@ impl Effects {
                     }
                 }
                 Action::Play {
+                    request_id,
                     anime,
                     episode,
                     local,
@@ -402,11 +449,34 @@ impl Effects {
                                     playback::Media::Remote(stream?)
                                 }
                             };
-                            playback::play(config, media, anime, episode, resume, tx.clone()).await
+                            let (tracks, audio_warning) =
+                                if playback::supports_audio_choice(&config) {
+                                    match anime_levisione::audio::probe(&media).await {
+                                        Ok(tracks) => (tracks, None),
+                                        Err(error) => (vec![], Some(format!("{error:#}"))),
+                                    }
+                                } else {
+                                    (vec![], None)
+                                };
+                            let audio = choose_audio(request_id, tracks, &tx).await?;
+                            playback::play(
+                                config,
+                                playback::PlayRequest {
+                                    id: request_id,
+                                    media,
+                                    anime,
+                                    episode,
+                                    resume,
+                                    audio,
+                                    audio_warning,
+                                },
+                                tx.clone(),
+                            )
+                            .await
                         }
                         .await
                         .map_err(|e| format!("{e:#}"));
-                        let _ = tx.send(Message::PlaybackEnded(result));
+                        let _ = tx.send(Message::PlaybackEnded { request_id, result });
                     }));
                 }
                 Action::Download { anime, episode } => {
@@ -487,6 +557,25 @@ impl Effects {
             self.save(app);
         }
     }
+    fn start_pending_rescan(&mut self, app: &mut App) {
+        if !self.rescan_pending || self.rescan.as_ref().is_some_and(|task| !task.is_finished()) {
+            return;
+        }
+        self.rescan_pending = false;
+        let root = app.config.download_dir.clone();
+        let tx = self.tx.clone();
+        // A dedicated read-only worker cannot delay Tokio shutdown if the
+        // filesystem stalls. Repeated requests coalesce into a follow-up scan.
+        match std::thread::Builder::new()
+            .name("offline-scan".into())
+            .spawn(move || {
+                let result = playback::scan_offline(&root).map_err(|e| format!("{e:#}"));
+                let _ = tx.send(Message::Offline(result));
+            }) {
+            Ok(task) => self.rescan = Some(task),
+            Err(error) => app.notify(format!("Cannot scan offline library: {error}"), true),
+        }
+    }
     fn abort_all(&mut self) {
         for handle in self.search.drain(..) {
             handle.abort();
@@ -498,6 +587,8 @@ impl Effects {
         }
         abort(&mut self.player);
         abort(&mut self.download);
+        // Dropping a std thread handle detaches this read-only scan.
+        self.rescan.take();
     }
 }
 async fn login(client_id: Option<u32>, store: &Store) -> Result<()> {
@@ -694,4 +785,114 @@ async fn doctor(config: &Config, registry: &Registry, store: &Store) -> Result<(
         Err(e) => println!("!! AniList: {e:#}"),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn one_audio_language_bypasses_the_picker() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let tracks =
+            anime_levisione::audio::hls_tracks("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"ita\"")
+                .expect("tracks");
+        assert!(
+            choose_audio(7, tracks, &tx)
+                .await
+                .expect("single audio")
+                .is_none()
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn multiple_audio_languages_wait_for_the_ui_and_cancel_if_it_closes() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let tracks = anime_levisione::audio::hls_tracks("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"ita\"\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"eng\"").expect("tracks");
+        let task = tokio::spawn(async move { choose_audio(7, tracks, &tx).await });
+        match rx.recv().await.expect("audio prompt") {
+            Message::ChooseAudio {
+                request_id,
+                tracks,
+                reply,
+            } => {
+                assert_eq!(request_id, 7);
+                assert!(!task.is_finished());
+                reply.send(Some(tracks[1].clone())).expect("confirm");
+            }
+            _ => panic!("expected audio prompt"),
+        }
+        assert_eq!(
+            task.await
+                .expect("task")
+                .expect("audio")
+                .expect("choice")
+                .language
+                .as_deref(),
+            Some("eng")
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let tracks = anime_levisione::audio::hls_tracks("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"ita\"\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"eng\"").expect("tracks");
+        let task = tokio::spawn(async move { choose_audio(8, tracks, &tx).await });
+        drop(rx.recv().await);
+        assert!(task.await.expect("task").is_err());
+    }
+
+    #[test]
+    fn rescans_during_a_running_scan_are_coalesced_not_lost() {
+        let directory = tempfile::tempdir().expect("offline directory");
+        let config = Config {
+            download_dir: directory.path().to_path_buf(),
+            ..Config::default()
+        };
+        let mut app = App::new(config, Library::default(), "test".into(), false);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let mut effects = Effects {
+            store: None,
+            registry: None,
+            anilist: None,
+            lookup: None,
+            track: vec![],
+            tx,
+            search: vec![],
+            detail: None,
+            player: None,
+            download: None,
+            rescan: Some(std::thread::spawn(move || {
+                let _ = wait.recv();
+            })),
+            rescan_pending: false,
+            demo_catalog: vec![],
+            progress_dirty: false,
+            last_save: Instant::now(),
+        };
+        effects.apply(vec![Action::Rescan, Action::Rescan], &mut app);
+        assert!(effects.rescan_pending);
+        assert!(
+            rx.try_recv().is_err(),
+            "the running scan must not be duplicated"
+        );
+        release.send(()).expect("release fake scan");
+        effects
+            .rescan
+            .take()
+            .expect("running scan")
+            .join()
+            .expect("scan finished");
+        effects.start_pending_rescan(&mut app);
+        assert!(!effects.rescan_pending);
+        effects
+            .rescan
+            .take()
+            .expect("follow-up scan")
+            .join()
+            .expect("scan finished");
+        assert!(matches!(rx.try_recv(), Ok(Message::Offline(Ok(offline))) if offline.is_empty()));
+        assert!(
+            rx.try_recv().is_err(),
+            "requests coalesce into one follow-up"
+        );
+    }
 }

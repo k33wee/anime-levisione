@@ -1,5 +1,5 @@
 use crate::{
-    app::{App, COMMANDS, Focus, Modal, View},
+    app::{App, COMMANDS, Focus, Modal, Pane, PaneRegion, View},
     model::{Anime, ProviderId},
 };
 use ratatui::{
@@ -50,56 +50,136 @@ fn selected_style(active: bool) -> Style {
         .fg(Color::White)
 }
 
-pub fn draw(frame: &mut Frame, app: &mut App) {
-    let area = frame.area();
+/// Allocate a real content row plus borders to every pane before sharing
+/// spare space. Fill-only constraints can otherwise squeeze a pane to nothing.
+fn row_heights(height: u16, weights: &[u16]) -> Vec<C> {
+    let extra = height.saturating_sub(3 * weights.len() as u16) as u32;
+    let total: u32 = weights.iter().map(|w| u32::from(*w)).sum();
+    let mut used = 0;
+    weights
+        .iter()
+        .map(|weight| {
+            let before = extra * used / total;
+            used += u32::from(*weight);
+            C::Length(3 + (extra * used / total - before) as u16)
+        })
+        .collect()
+}
+
+struct PaneLayout {
+    panes: Vec<(Pane, Rect)>,
+    tabs: Option<Rect>,
+    footer: Rect,
+}
+fn pane_layout(area: Rect, active: Pane, jobs: u16) -> PaneLayout {
     if area.width < 60 || area.height < 18 {
-        frame.render_widget(
-            Paragraph::new("anime-levisione\n\nResize to at least 60 × 18.\nPress q to quit.")
-                .block(panel(" anime-levisione ", true))
-                .wrap(Wrap { trim: false }),
-            area,
-        );
-        return;
+        // On genuinely tiny terminals, zoom the focused pane instead of
+        // replacing the app with a resize warning. Every pane stays reachable.
+        let tabs_height = u16::from(area.height >= 3);
+        let footer_height = u16::from(area.height >= 2);
+        let rows = Layout::vertical([C::Length(tabs_height), C::Min(0), C::Length(footer_height)])
+            .split(area);
+        return PaneLayout {
+            panes: vec![(active, rows[1])],
+            tabs: (tabs_height > 0).then_some(rows[0]),
+            footer: rows[2],
+        };
     }
     let root = Layout::vertical([C::Min(1), C::Length(1)]).split(area);
-    let columns = Layout::horizontal([C::Percentage(35), C::Percentage(65)])
-        .spacing(1)
-        .split(root[0]);
-    if area.width >= 100 && area.height >= 30 {
-        let left = Layout::vertical([
-            C::Length(5),
-            C::Fill(4),
-            C::Fill(2),
-            C::Fill(2),
-            C::Length(4),
-        ])
-        .spacing(1)
-        .split(columns[0]);
-        search(frame, app, left[0]);
-        results(frame, app, left[1]);
-        library_panel(frame, app, View::Continue, left[2]);
-        library_panel(frame, app, View::Watchlist, left[3]);
-        library_panel(frame, app, View::Offline, left[4]);
-    } else {
-        let left = Layout::vertical([C::Length(5), C::Min(1)]).split(columns[0]);
-        search(frame, app, left[0]);
-        if matches!(app.view, View::Discover | View::Search) {
-            results(frame, app, left[1]);
-        } else {
-            library_panel(frame, app, app.view, left[1]);
-        }
-    }
-    let right = Layout::vertical([
-        C::Fill(5),
-        C::Fill(4),
-        C::Length(if app.playing || app.downloading { 4 } else { 3 }),
+    let columns = Layout::horizontal([
+        C::Percentage(if area.width >= 100 { 35 } else { 40 }),
+        C::Min(1),
     ])
     .spacing(1)
-    .split(columns[1]);
-    details(frame, app, right[0]);
-    episodes(frame, app, right[1]);
-    log(frame, app, right[2]);
-    footer(frame, app, root[1]);
+    .split(root[0]);
+    let gap = u16::from(area.height >= 32);
+    let search_height = if area.height >= 24 { 5 } else { 3 };
+    let mut left_rows = vec![C::Length(search_height)];
+    left_rows.extend(row_heights(
+        columns[0].height - search_height - 4 * gap,
+        &[4, 2, 2, 1],
+    ));
+    let left = Layout::vertical(left_rows).spacing(gap).split(columns[0]);
+    let activity_height = 3 + jobs;
+    let mut right_rows = row_heights(columns[1].height - activity_height - 2 * gap, &[5, 4]);
+    right_rows.push(C::Length(activity_height));
+    let right = Layout::vertical(right_rows).spacing(gap).split(columns[1]);
+    PaneLayout {
+        panes: vec![
+            (Pane::Search, left[0]),
+            (Pane::Results, left[1]),
+            (Pane::Continue, left[2]),
+            (Pane::Watchlist, left[3]),
+            (Pane::Offline, left[4]),
+            (Pane::Details, right[0]),
+            (Pane::Episodes, right[1]),
+            (Pane::Activity, right[2]),
+        ],
+        tabs: None,
+        footer: root[1],
+    }
+}
+
+pub fn draw(frame: &mut Frame, app: &mut App) {
+    let layout = pane_layout(
+        frame.area(),
+        app.pane(),
+        u16::from(app.playing) + u16::from(app.downloading),
+    );
+    app.pane_regions.clear();
+    app.audio_rows.clear();
+    if let Some(area) = layout.tabs {
+        let mut x = area.x;
+        for pane in Pane::ALL {
+            let tab = Rect::new(x, area.y, 3.min(area.right().saturating_sub(x)), 1);
+            frame.render_widget(
+                Paragraph::new(format!(" {} ", pane.shortcut())).style(if app.pane() == pane {
+                    selected_style(true)
+                } else {
+                    Style::default().fg(MUTED)
+                }),
+                tab,
+            );
+            app.pane_regions.push(PaneRegion {
+                pane,
+                area: tab,
+                content: Rect::default(),
+                offset: 0,
+            });
+            x = tab.right();
+        }
+    }
+    for (pane, area) in layout.panes {
+        match pane {
+            Pane::Search => search(frame, app, area),
+            Pane::Results => results(frame, app, area),
+            Pane::Continue => library_panel(frame, app, View::Continue, area),
+            Pane::Watchlist => library_panel(frame, app, View::Watchlist, area),
+            Pane::Offline => library_panel(frame, app, View::Offline, area),
+            Pane::Details => details(frame, app, area),
+            Pane::Episodes => episodes(frame, app, area),
+            Pane::Activity => log(frame, app, area),
+        }
+        // Stateful lists retain their viewport even while another pane has
+        // keyboard focus. Hit testing must use what was actually rendered.
+        let offset = match pane {
+            Pane::Episodes => app.episodes.offset(),
+            Pane::Results if matches!(app.view, View::Discover | View::Search) => {
+                app.titles.offset()
+            }
+            Pane::Continue if app.view == View::Continue => app.titles.offset(),
+            Pane::Watchlist if app.view == View::Watchlist => app.titles.offset(),
+            Pane::Offline if app.view == View::Offline => app.titles.offset(),
+            _ => 0,
+        };
+        app.pane_regions.push(PaneRegion {
+            pane,
+            area,
+            content: Block::bordered().inner(area),
+            offset,
+        });
+    }
+    footer(frame, app, layout.footer);
     if let Some(modal) = app.modal {
         popup(frame, app, modal);
     }
@@ -183,7 +263,7 @@ fn search(frame: &mut Frame, app: &App, area: Rect) {
             },
         );
     }
-    if focused && app.modal.is_none() && inner.width > 2 {
+    if focused && app.modal.is_none() && inner.width > 2 && inner.height > 0 {
         frame.set_cursor_position((
             inner.x
                 + 2
@@ -221,12 +301,11 @@ fn results(frame: &mut Frame, app: &mut App, area: Rect) {
     let visible: Vec<Anime> = if active_view {
         app.visible().into_iter().cloned().collect()
     } else {
-        if app.query.value.trim().is_empty() {
-            &app.discovered
+        app.view_titles(if app.query.value.trim().is_empty() {
+            View::Discover
         } else {
-            &app.searched
-        }
-        .clone()
+            View::Search
+        })
     };
     let label = if app.query.value.trim().is_empty() {
         "Discover - Search"
@@ -286,24 +365,7 @@ fn library_panel(frame: &mut Frame, app: &mut App, view: View, area: Rect) {
     let data: Vec<Anime> = if is_view {
         app.visible().into_iter().cloned().collect()
     } else {
-        match view {
-            View::Continue => app
-                .library
-                .history
-                .iter()
-                .map(|h| h.anime.clone())
-                .collect(),
-            View::Watchlist => app.library.watchlist.clone(),
-            _ => {
-                let mut titles: Vec<Anime> = vec![];
-                for e in &app.offline {
-                    if !titles.iter().any(|a| a.key() == e.anime.key()) {
-                        titles.push(e.anime.clone());
-                    }
-                }
-                titles
-            }
-        }
+        app.view_titles(view)
     };
     let block = panel(format!("[{number}]-{}", view.label()), active).title_bottom(count_footer(
         if is_view { app.titles.selected() } else { None },
@@ -531,9 +593,9 @@ fn episodes(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = matches!(app.focus, Focus::Episodes | Focus::EpisodeFilter);
     let eps = app.visible_episodes();
     let title = if app.episode_filter.value.is_empty() {
-        "Episodes · Enter: play · f: filter".into()
+        "[6]-Episodes · Enter: play · f: filter".into()
     } else {
-        format!("Episodes · filter: {}", app.episode_filter.value)
+        format!("[6]-Episodes · filter: {}", app.episode_filter.value)
     };
     let block =
         panel(title, focused).title_bottom(count_footer(app.episodes.selected(), eps.len()));
@@ -621,8 +683,9 @@ fn log(frame: &mut Frame, app: &App, area: Rect) {
     }
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel("Activity", false))
-            .wrap(Wrap { trim: false }),
+            .block(panel("[7]-Activity", app.focus == Focus::Activity))
+            .wrap(Wrap { trim: false })
+            .scroll((app.activity_scroll, 0)),
         area,
     );
 }
@@ -634,7 +697,7 @@ fn footer(frame: &mut Frame, app: &App, area: Rect) {
     } else if app.focus == Focus::Episodes {
         "Play: Enter | Restart: s | Next: n | Watched: m | Download: d | Filter: f | Help: ?"
     } else {
-        "Search: / | Episodes: Enter | Save: w | Panels: Tab/1-5 | Commands: : | Help: ? | Quit: q"
+        "Tab/Shift-Tab: panes | Click: focus | / search | 0-7: panes | ?: help | q: quit"
     };
     frame.render_widget(
         Paragraph::new(help).style(Style::default().fg(Color::Magenta)),
@@ -654,6 +717,11 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
         Modal::Commands => 24,
         Modal::Diagnostics => 18,
         Modal::Help => 30,
+        Modal::Audio => app
+            .audio_prompt
+            .as_ref()
+            .map_or(8, |prompt| prompt.tracks.len() as u16 + 6)
+            .clamp(8, 20),
     }
     .min(outer.height.saturating_sub(2));
     let area = Rect::new(
@@ -669,10 +737,53 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
         Modal::Settings => "Settings & paths · Esc to close",
         Modal::Diagnostics => "Provider diagnostics · Esc to close",
         Modal::Quit => "Quit anime-levisione?",
+        Modal::Audio => "Choose audio language · ↑/↓ select · Enter play · Esc cancel",
     };
     let block = panel(title, true);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    if modal == Modal::Audio {
+        let rows = Layout::vertical([C::Length(1), C::Min(0), C::Length(1)]).split(inner);
+        frame.render_widget(Paragraph::new(app.playback_label.clone()), rows[0]);
+        if let Some(prompt) = app.audio_prompt.as_mut() {
+            let items = prompt
+                .tracks
+                .iter()
+                .map(|track| {
+                    ListItem::new(Line::from(vec![
+                        Span::raw(track.label.clone()),
+                        dim(track
+                            .language
+                            .as_ref()
+                            .map_or(String::new(), |language| format!(" ({language})"))),
+                        dim(if track.default { " · default" } else { "" }),
+                    ]))
+                })
+                .collect::<Vec<_>>();
+            frame.render_stateful_widget(
+                List::new(items)
+                    .highlight_symbol("> ")
+                    .highlight_style(selected_style(true)),
+                rows[1],
+                &mut prompt.state,
+            );
+            for row in 0..rows[1].height {
+                let index = prompt.state.offset() + usize::from(row);
+                if index < prompt.tracks.len() {
+                    app.audio_rows.push((
+                        Rect::new(rows[1].x, rows[1].y + row, rows[1].width, 1),
+                        index,
+                    ));
+                }
+            }
+        }
+        frame.render_widget(
+            Paragraph::new("Enter: play · Esc: cancel · Click/wheel: select")
+                .style(Style::default().fg(ACCENT)),
+            rows[2],
+        );
+        return;
+    }
     if modal == Modal::Commands {
         let rows = Layout::vertical([C::Length(2), C::Min(1)]).split(inner);
         frame.render_widget(
@@ -700,19 +811,23 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
             .command_input
             .column()
             .min(inner.width.saturating_sub(3) as usize) as u16;
-        frame.set_cursor_position((inner.x + 2 + cursor, inner.y));
+        if inner.width > 2 && inner.height > 0 {
+            frame.set_cursor_position((inner.x + 2 + cursor, inner.y));
+        }
         return;
     }
     let lines = match modal {
         Modal::Help => vec![
             "NAVIGATION",
-            "  / or 1       Search anime (350 ms debounce, both sources)",
+            "  / or 1       Search anime (350 ms debounce, all sources)",
             "  2            Results / latest releases",
             "  3 / 4 / 5    Continue / watchlist / offline",
-            "  0            Anime details",
-            "  Tab / h / l  Switch pane       j / k / ↑ / ↓  Move",
+            "  0 / 6 / 7    Details / episodes / activity",
+            "  Tab / Shift-Tab   Next / previous pane (all eight)",
+            "  h / l        Switch pane       j / k / ↑ / ↓  Move",
+            "  Mouse        Click to focus/select; wheel to scroll",
             "  g / G        First / last      PgUp / PgDn    Page",
-            "  Enter        Open episodes, then play",
+            "  Enter        Open episodes, then choose audio / play",
             "",
             "ACTIONS",
             "  w            Toggle watchlist",
@@ -765,7 +880,7 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
             Line::from(""),
             Line::from("mpv: automatic resume and watched tracking (macOS/Linux/WSL)."),
             Line::from("VLC: playback/resume; use m to mark completion manually."),
-            Line::from("ffmpeg: required only for downloads. No Python or fzf."),
+            Line::from("ffmpeg: downloads; ffprobe: optional file audio-language detection."),
             Line::from("Player args are passed literally, never through a shell."),
             Line::from(""),
             Line::from(dim(
@@ -832,7 +947,7 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
             Line::from(""),
             Line::from(accent("y: stop and quit    n / Esc: keep watching")),
         ],
-        Modal::Commands => unreachable!(),
+        Modal::Commands | Modal::Audio => unreachable!(),
     };
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
@@ -845,6 +960,258 @@ mod tests {
         store::{Config, Library},
     };
     use ratatui::{Terminal, backend::TestBackend};
+    fn mouse(
+        kind: crossterm::event::MouseEventKind,
+        x: u16,
+        y: u16,
+    ) -> crossterm::event::MouseEvent {
+        crossterm::event::MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        }
+    }
+    fn demo_app() -> App {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), true);
+        crate::demo::populate(&mut app);
+        app
+    }
+
+    #[test]
+    fn audio_picker_renders_and_mouse_selection_survives_resize() -> anyhow::Result<()> {
+        let mut app = demo_app();
+        app.playing = true;
+        let tracks = crate::audio::hls_tracks(
+            "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,NAME=\"Italian\",LANGUAGE=\"ita\",DEFAULT=YES\n#EXT-X-MEDIA:TYPE=AUDIO,NAME=\"English\",LANGUAGE=\"eng\"",
+        )?;
+        let (reply, mut receive) = tokio::sync::oneshot::channel();
+        app.message(crate::events::Message::ChooseAudio {
+            request_id: app.playback_id,
+            tracks,
+            reply,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+        for (width, height) in [(80, 24), (40, 10), (120, 40)] {
+            terminal.backend_mut().resize(width, height);
+            terminal.resize(Rect::new(0, 0, width, height))?;
+            terminal.draw(|f| draw(f, &mut app))?;
+            let row = app
+                .audio_rows
+                .iter()
+                .find(|(_, index)| *index == 1)
+                .expect("English row")
+                .0;
+            app.mouse(mouse(
+                crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                row.x,
+                row.y,
+            ));
+            assert_eq!(
+                app.audio_prompt.as_ref().expect("prompt").state.selected(),
+                Some(1)
+            );
+            assert!(
+                receive.try_recv().is_err(),
+                "a click selects, Enter confirms"
+            );
+        }
+        app.key(crossterm::event::KeyCode::Enter.into());
+        assert_eq!(
+            receive.try_recv()?.expect("track").language.as_deref(),
+            Some("eng")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn normal_terminal_sizes_keep_all_panes_visible_and_clickable() -> anyhow::Result<()> {
+        for (width, height) in [
+            (60, 18),
+            (80, 24),
+            (100, 29),
+            (100, 30),
+            (120, 32),
+            (160, 50),
+        ] {
+            let mut app = demo_app();
+            app.playing = true;
+            app.downloading = true;
+            let mut terminal = Terminal::new(TestBackend::new(width, height))?;
+            terminal.draw(|f| draw(f, &mut app))?;
+            assert_eq!(app.pane_regions.len(), Pane::ALL.len());
+            for region in app.pane_regions.clone() {
+                assert!(region.content.height >= 1, "{width}x{height}: {:?}", region);
+                assert!(region.area.right() <= width && region.area.bottom() < height);
+                app.mouse(mouse(
+                    crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                    region.area.x,
+                    region.area.y,
+                ));
+                assert_eq!(app.pane(), region.pane);
+                terminal.draw(|f| draw(f, &mut app))?;
+                assert_eq!(
+                    terminal.backend().buffer()[(region.area.x, region.area.y)].fg,
+                    ACTIVE
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn tiny_terminals_show_the_focused_pane_instead_of_a_resize_warning() -> anyhow::Result<()> {
+        let mut app = demo_app();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10))?;
+        for pane in Pane::ALL {
+            app.focus_pane(pane);
+            terminal.draw(|f| draw(f, &mut app))?;
+            let body = app.pane_regions.last().expect("focused pane");
+            assert_eq!(body.pane, pane);
+            assert!(body.content.height > 0);
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(!text.contains("Resize to"));
+        }
+        // The numbered tab strip is also clickable in zoomed mode.
+        app.mouse(mouse(
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            7,
+            0,
+        ));
+        assert_eq!(app.pane(), Pane::Continue);
+        Ok(())
+    }
+
+    #[test]
+    fn mouse_selects_the_rendered_row_after_scrolling_without_playing() -> anyhow::Result<()> {
+        let mut app = demo_app();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+        app.move_selection(1000);
+        terminal.draw(|f| draw(f, &mut app))?;
+        let region = *app
+            .pane_regions
+            .iter()
+            .find(|r| r.pane == Pane::Results)
+            .expect("results");
+        assert!(region.offset > 0);
+        app.focus_pane(Pane::Details);
+        terminal.draw(|f| draw(f, &mut app))?;
+        assert_eq!(
+            app.pane_regions
+                .iter()
+                .find(|r| r.pane == Pane::Results)
+                .expect("results")
+                .offset,
+            region.offset
+        );
+        app.mouse(mouse(
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            region.content.x,
+            region.content.y,
+        ));
+        assert_eq!(app.titles.selected(), Some(region.offset));
+        app.focus_pane(Pane::Episodes);
+        app.move_selection(1000);
+        terminal.draw(|f| draw(f, &mut app))?;
+        let region = *app
+            .pane_regions
+            .iter()
+            .find(|r| r.pane == Pane::Episodes)
+            .expect("episodes");
+        assert!(region.offset > 0);
+        app.focus_pane(Pane::Details);
+        terminal.draw(|f| draw(f, &mut app))?;
+        assert_eq!(
+            app.pane_regions
+                .iter()
+                .find(|r| r.pane == Pane::Episodes)
+                .expect("episodes")
+                .offset,
+            region.offset
+        );
+        assert!(
+            app.mouse(mouse(
+                crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                region.content.x,
+                region.content.y
+            ))
+            .is_empty()
+        );
+        assert_eq!(app.episodes.selected(), Some(region.offset));
+        assert!(!app.playing);
+        app.mouse(mouse(
+            crossterm::event::MouseEventKind::ScrollUp,
+            region.content.x,
+            region.content.y,
+        ));
+        assert_eq!(
+            app.episodes.selected(),
+            Some(region.offset.saturating_sub(3))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn clicking_inactive_filtered_panes_selects_the_same_title_as_displayed() -> anyhow::Result<()>
+    {
+        let mut app = demo_app();
+        app.provider_filter = Some(ProviderId::AnimeUnity);
+        let expected = app.view_titles(View::Watchlist)[0].key();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+        terminal.draw(|f| draw(f, &mut app))?;
+        let region = *app
+            .pane_regions
+            .iter()
+            .find(|r| r.pane == Pane::Watchlist)
+            .expect("watchlist");
+        app.mouse(mouse(
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            region.content.x,
+            region.content.y,
+        ));
+        assert_eq!(app.view, View::Watchlist);
+        assert_eq!(app.selected().map(Anime::key), Some(expected));
+        app.modal = Some(Modal::Help);
+        app.mouse(mouse(
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            0,
+            0,
+        ));
+        assert_eq!(
+            app.pane(),
+            Pane::Watchlist,
+            "no click-through behind modals"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resizing_rebuilds_hit_regions_and_keeps_focus() -> anyhow::Result<()> {
+        let mut app = demo_app();
+        app.focus_pane(Pane::Details);
+        let mut terminal = Terminal::new(TestBackend::new(160, 50))?;
+        for (width, height) in [(160, 50), (80, 24), (40, 10), (60, 18), (160, 50)] {
+            terminal.backend_mut().resize(width, height);
+            terminal.resize(Rect::new(0, 0, width, height))?;
+            terminal.draw(|f| draw(f, &mut app))?;
+            assert_eq!(app.pane(), Pane::Details);
+            assert!(
+                app.pane_regions
+                    .iter()
+                    .all(|r| r.area.right() <= width && r.area.bottom() <= height)
+            );
+            let region = app.pane_regions.last().expect("last pane");
+            assert!(region.area.height > 0);
+        }
+        Ok(())
+    }
+
     #[test]
     fn layout_matches_numbered_lazygit_panes() -> anyhow::Result<()> {
         let mut app = App::new(
@@ -936,6 +1303,7 @@ mod tests {
                 Some(Modal::Settings),
                 Some(Modal::Diagnostics),
                 Some(Modal::Quit),
+                Some(Modal::Audio),
             ] {
                 app.modal = modal;
                 let mut terminal = Terminal::new(TestBackend::new(width, height))?;

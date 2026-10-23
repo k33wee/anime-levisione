@@ -122,6 +122,37 @@ async fn streamingcommunity_search_lists_episodes_and_resolves_a_stream() {
 }
 
 #[tokio::test]
+#[ignore = "hits live StreamingCommunity audio metadata"]
+async fn streamingcommunity_audio_metadata_exposes_italian_and_english() {
+    let registry = Registry::new(&Config::default(), None).expect("providers");
+    let provider = registry.ready(ProviderId::StreamingCommunity).await;
+    let results = bounded(provider.search("one piece")).await.expect("search");
+    let anime = results
+        .into_iter()
+        .find(|a| a.id == "6654-one-piece")
+        .expect("ONE PIECE (2023)");
+    let (anime, episodes) = bounded(provider.episodes(anime)).await.expect("episodes");
+    let stream = bounded(provider.resolve(&anime, &episodes[0]))
+        .await
+        .expect("stream");
+    let tracks = anime_levisione::audio::probe(&anime_levisione::playback::Media::Remote(stream))
+        .await
+        .expect("audio metadata");
+    assert!(
+        tracks
+            .iter()
+            .any(|track| track.language.as_deref() == Some("ita")),
+        "missing Italian audio"
+    );
+    assert!(
+        tracks
+            .iter()
+            .any(|track| track.language.as_deref() == Some("eng")),
+        "missing English audio"
+    );
+}
+
+#[tokio::test]
 #[ignore = "hits live providers"]
 async fn all_providers_resolve_a_live_domain() {
     let registry = Registry::new(&Config::default(), None).expect("providers");

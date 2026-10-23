@@ -1,13 +1,19 @@
 use crate::{
     anilist::{MediaEntry, TrackEvent},
+    audio::AudioTrack,
     events::Message,
     input::Input,
     model::{Anime, Episode, ProviderId, normalize, sort_by_rank},
     playback::{Media, OfflineEpisode},
     store::{Config, Library, Progress},
 };
-use crossterm::event::{KeyCode as K, KeyEvent, KeyModifiers as M};
-use ratatui::widgets::ListState;
+use crossterm::event::{
+    KeyCode as K, KeyEvent, KeyModifiers as M, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::{
+    layout::{Position, Rect},
+    widgets::ListState,
+};
 use std::{
     collections::HashMap,
     time::{Duration, Instant},
@@ -39,7 +45,54 @@ pub enum Focus {
     Episodes,
     Details,
     EpisodeFilter,
+    Activity,
 }
+
+/// Screen panes are distinct even when several share the title-list controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    Search,
+    Results,
+    Continue,
+    Watchlist,
+    Offline,
+    Details,
+    Episodes,
+    Activity,
+}
+impl Pane {
+    pub const ALL: [Self; 8] = [
+        Self::Search,
+        Self::Results,
+        Self::Continue,
+        Self::Watchlist,
+        Self::Offline,
+        Self::Details,
+        Self::Episodes,
+        Self::Activity,
+    ];
+    pub fn shortcut(self) -> char {
+        match self {
+            Self::Search => '1',
+            Self::Results => '2',
+            Self::Continue => '3',
+            Self::Watchlist => '4',
+            Self::Offline => '5',
+            Self::Details => '0',
+            Self::Episodes => '6',
+            Self::Activity => '7',
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PaneRegion {
+    pub pane: Pane,
+    pub area: Rect,
+    pub content: Rect,
+    pub offset: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Audio {
     All,
@@ -62,7 +115,15 @@ pub enum Modal {
     Settings,
     Diagnostics,
     Quit,
+    Audio,
 }
+
+pub struct AudioPrompt {
+    pub tracks: Vec<AudioTrack>,
+    pub state: ListState,
+    reply: tokio::sync::oneshot::Sender<Option<AudioTrack>>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SourceStatus {
     pub provider: ProviderId,
@@ -78,6 +139,7 @@ pub enum Action {
     },
     Episodes(Anime),
     Play {
+        request_id: u64,
         anime: Anime,
         episode: Episode,
         local: Option<Media>,
@@ -146,9 +208,16 @@ pub struct App {
     pub detail_error: Option<String>,
     pub detail_loading: bool,
     pub detail_scroll: u16,
+    pub activity_scroll: u16,
+    /// Hit regions from the latest frame, including the rendered list offsets.
+    pub pane_regions: Vec<PaneRegion>,
     pub statuses: Vec<SourceStatus>,
     pub generation: u64,
     pub modal: Option<Modal>,
+    pub audio_prompt: Option<AudioPrompt>,
+    /// Visible language rows from the most recent modal frame.
+    pub audio_rows: Vec<(Rect, usize)>,
+    pub playback_id: u64,
     pub command_input: Input,
     pub command_selected: usize,
     pub notice: String,
@@ -192,9 +261,14 @@ impl App {
             detail_error: None,
             detail_loading: false,
             detail_scroll: 0,
+            activity_scroll: 0,
+            pane_regions: vec![],
             statuses: vec![],
             generation: 0,
             modal: None,
+            audio_prompt: None,
+            audio_rows: vec![],
+            playback_id: 0,
             command_input: Input::default(),
             command_selected: 0,
             notice: "Find your next episode. Press / to search, ? for help.".into(),
@@ -212,6 +286,118 @@ impl App {
             anilist_error: None,
             catalog_view: View::Discover,
         }
+    }
+    pub fn pane(&self) -> Pane {
+        match self.focus {
+            Focus::Search => Pane::Search,
+            Focus::Titles => match self.view {
+                View::Discover | View::Search => Pane::Results,
+                View::Continue => Pane::Continue,
+                View::Watchlist => Pane::Watchlist,
+                View::Offline => Pane::Offline,
+            },
+            Focus::Details => Pane::Details,
+            Focus::Episodes | Focus::EpisodeFilter => Pane::Episodes,
+            Focus::Activity => Pane::Activity,
+        }
+    }
+    pub fn focus_pane(&mut self, pane: Pane) -> Vec<Action> {
+        let view = match pane {
+            Pane::Search => Some(View::Search),
+            Pane::Results => Some(if self.query.value.trim().is_empty() {
+                View::Discover
+            } else {
+                View::Search
+            }),
+            Pane::Continue => Some(View::Continue),
+            Pane::Watchlist => Some(View::Watchlist),
+            Pane::Offline => Some(View::Offline),
+            _ => None,
+        };
+        let actions = view
+            .filter(|view| *view != self.view)
+            .map(|view| self.switch_view(view))
+            .unwrap_or_default();
+        self.focus = match pane {
+            Pane::Search => Focus::Search,
+            Pane::Results | Pane::Continue | Pane::Watchlist | Pane::Offline => Focus::Titles,
+            Pane::Details => Focus::Details,
+            Pane::Episodes => Focus::Episodes,
+            Pane::Activity => Focus::Activity,
+        };
+        actions
+    }
+    fn cycle_pane(&mut self, backwards: bool) -> Vec<Action> {
+        let index = Pane::ALL
+            .iter()
+            .position(|p| *p == self.pane())
+            .unwrap_or(0);
+        let next = (index + if backwards { Pane::ALL.len() - 1 } else { 1 }) % Pane::ALL.len();
+        self.focus_pane(Pane::ALL[next])
+    }
+    pub fn mouse(&mut self, event: MouseEvent) -> Vec<Action> {
+        if self.modal == Some(Modal::Audio) {
+            match event.kind {
+                MouseEventKind::ScrollUp => self.move_audio(-1),
+                MouseEventKind::ScrollDown => self.move_audio(1),
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some((_, index)) = self
+                        .audio_rows
+                        .iter()
+                        .find(|(rect, _)| rect.contains(Position::new(event.column, event.row)))
+                        && let Some(prompt) = self.audio_prompt.as_mut()
+                    {
+                        prompt.state.select(Some(*index));
+                    }
+                }
+                _ => {}
+            }
+            return vec![];
+        }
+        if self.modal.is_some()
+            || !matches!(
+                event.kind,
+                MouseEventKind::Down(MouseButton::Left)
+                    | MouseEventKind::ScrollUp
+                    | MouseEventKind::ScrollDown
+            )
+        {
+            return vec![];
+        }
+        let position = Position::new(event.column, event.row);
+        let Some(region) = self
+            .pane_regions
+            .iter()
+            .find(|r| r.area.contains(position))
+            .copied()
+        else {
+            return vec![];
+        };
+        let actions = self.focus_pane(region.pane);
+        match event.kind {
+            MouseEventKind::ScrollUp => self.move_selection(-3),
+            MouseEventKind::ScrollDown => self.move_selection(3),
+            MouseEventKind::Down(MouseButton::Left) if region.content.contains(position) => {
+                let index = region.offset + usize::from(event.row - region.content.y);
+                if self.focus == Focus::Titles && index < self.visible().len() {
+                    if self.titles.selected() != Some(index) {
+                        self.titles.select(Some(index));
+                        self.selection_changed();
+                    }
+                } else if self.focus == Focus::Episodes && index < self.visible_episodes().len() {
+                    self.episodes.select(Some(index));
+                }
+            }
+            _ => {}
+        }
+        actions
+    }
+    pub fn needs_tick_redraw(&self) -> bool {
+        self.downloading
+            || self.statuses.iter().any(|s| s.pending)
+            || self.search_pending.is_some()
+            || self.detail_pending.is_some()
+            || self.meta_pending.is_some()
     }
     pub fn visible(&self) -> Vec<&Anime> {
         self.catalog
@@ -255,6 +441,7 @@ impl App {
             .collect()
     }
     pub fn notify(&mut self, text: impl Into<String>, error: bool) {
+        self.activity_scroll = 0;
         self.notice = text.into();
         self.notice_error = error;
     }
@@ -288,7 +475,11 @@ impl App {
     }
     pub fn switch_view(&mut self, view: View) -> Vec<Action> {
         if self.view != view && (self.view == View::Offline || view == View::Offline) {
-            self.details.clear();
+            // Only offline titles change episode source. Keep unrelated online
+            // details cached when traversing the Offline pane with Tab.
+            for entry in &self.offline {
+                self.details.remove(&entry.anime.key());
+            }
         }
         self.search_pending = None;
         self.view = view;
@@ -309,8 +500,8 @@ impl App {
             _ => vec![],
         }
     }
-    pub fn rebuild(&mut self) {
-        self.catalog = match self.view {
+    fn unfiltered_titles(&self, view: View) -> Vec<Anime> {
+        match view {
             View::Discover => self.discovered.clone(),
             View::Search => self.searched.clone(),
             View::Continue => self
@@ -329,7 +520,24 @@ impl App {
                 }
                 titles
             }
-        };
+        }
+    }
+    pub fn view_titles(&self, view: View) -> Vec<Anime> {
+        self.unfiltered_titles(view)
+            .into_iter()
+            .filter(|a| {
+                self.provider_filter.is_none_or(|p| a.provider == p)
+                    && match self.audio {
+                        Audio::All => true,
+                        Audio::Sub => !a.dub,
+                        Audio::Dub => a.dub,
+                    }
+            })
+            .collect()
+    }
+    pub fn rebuild(&mut self) {
+        // Keep the unfiltered catalogue: p/a can change filters without a refetch.
+        self.catalog = self.unfiltered_titles(self.view);
         let count = self.visible().len();
         self.titles.select(if count == 0 {
             None
@@ -545,10 +753,66 @@ impl App {
                     _ => {}
                 }
             }
-            Message::PlaybackStarted => self.notify(
-                "Playing in your player · resume is saved automatically with mpv · Ctrl+x to stop",
-                false,
-            ),
+            Message::Offline(result) => match result {
+                Ok(offline) => {
+                    let selected = self.selected().map(Anime::key);
+                    if self.view == View::Offline {
+                        for entry in self.offline.iter().chain(offline.iter()) {
+                            self.details.remove(&entry.anime.key());
+                        }
+                    }
+                    self.offline = offline;
+                    if self.view == View::Offline {
+                        self.rebuild();
+                        if let Some(index) = selected
+                            .and_then(|key| self.visible().iter().position(|a| a.key() == key))
+                        {
+                            self.titles.select(Some(index));
+                            self.selection_changed();
+                        }
+                    }
+                }
+                Err(error) => self.notify(format!("Cannot read offline library: {error}"), true),
+            },
+            Message::ChooseAudio {
+                request_id,
+                tracks,
+                reply,
+            } => {
+                if request_id != self.playback_id || !self.playing || reply.is_closed() {
+                    return vec![];
+                }
+                let selected = tracks.iter().position(|track| track.default).unwrap_or(0);
+                self.audio_prompt = Some(AudioPrompt {
+                    tracks,
+                    state: ListState::default().with_selected(Some(selected)),
+                    reply,
+                });
+                if self.modal != Some(Modal::Quit) {
+                    self.modal = Some(Modal::Audio);
+                }
+                self.notify("Choose an audio language before starting the player", false);
+            }
+            Message::PlaybackStarted {
+                request_id,
+                audio,
+                warning,
+            } => {
+                if request_id != self.playback_id {
+                    return vec![];
+                }
+                let mut notice = audio.map_or_else(
+                    || "Playing in your player".into(),
+                    |label| format!("Playing · {label}"),
+                );
+                if let Some(warning) = warning {
+                    notice.push_str(&format!(
+                        " · Audio metadata unavailable ({warning}); using player default"
+                    ));
+                }
+                notice.push_str(" · Ctrl+x to stop");
+                self.notify(notice, false);
+            }
             Message::Progress { anime, progress } => {
                 if !self.config.private {
                     let was_completed = self
@@ -574,8 +838,15 @@ impl App {
                     return actions;
                 }
             }
-            Message::PlaybackEnded(result) => {
+            Message::PlaybackEnded { request_id, result } => {
+                if request_id != self.playback_id {
+                    return vec![];
+                }
                 self.playing = false;
+                self.audio_prompt = None;
+                if self.modal == Some(Modal::Audio) {
+                    self.modal = None;
+                }
                 match result {
                     Ok(()) => self.notify(
                         "Player closed. Enter to watch, n for the next episode.",
@@ -602,6 +873,9 @@ impl App {
         vec![]
     }
     pub fn paste(&mut self, text: &str) {
+        if self.modal.is_some() && self.modal != Some(Modal::Commands) {
+            return;
+        }
         if self.modal == Some(Modal::Commands) {
             self.command_input.insert(text);
             self.command_selected = 0;
@@ -621,11 +895,7 @@ impl App {
                     self.open_commands();
                     return vec![];
                 }
-                K::Char('x') => {
-                    self.playing = false;
-                    self.notify("Playback stopped", false);
-                    return vec![Action::CancelPlayback];
-                }
+                K::Char('x') => return self.cancel_playback(),
                 K::Char('d') => {
                     self.downloading = false;
                     self.notify("Download cancelled; partial file removed", false);
@@ -634,11 +904,23 @@ impl App {
                 _ => {}
             }
         }
+        if self.modal == Some(Modal::Audio) {
+            match key.code {
+                K::Esc | K::Char('q') => return self.cancel_playback(),
+                K::Down | K::Char('j') | K::Tab => self.move_audio(1),
+                K::Up | K::Char('k') | K::BackTab => self.move_audio(-1),
+                K::Home | K::Char('g') => self.move_audio(-1000),
+                K::End | K::Char('G') => self.move_audio(1000),
+                K::Enter => self.confirm_audio(),
+                _ => {}
+            }
+            return vec![];
+        }
         if let Some(modal) = self.modal {
             if key.code == K::Esc
                 || (modal != Modal::Commands && matches!(key.code, K::Char('q') | K::Char('?')))
             {
-                self.modal = None;
+                self.close_modal();
                 return vec![];
             }
             if modal == Modal::Quit {
@@ -646,7 +928,7 @@ impl App {
                     return vec![Action::Quit];
                 }
                 if matches!(key.code, K::Char('n') | K::Char('N')) {
-                    self.modal = None;
+                    self.close_modal();
                 }
             } else if modal == Modal::Commands {
                 let commands = self.commands();
@@ -659,7 +941,11 @@ impl App {
                     K::Enter => {
                         if let Some(index) = commands.get(self.command_selected).copied() {
                             self.modal = None;
-                            return self.execute_command(index);
+                            let actions = self.execute_command(index);
+                            if self.modal.is_none() {
+                                self.close_modal();
+                            }
+                            return actions;
                         }
                     }
                     _ => {
@@ -670,6 +956,10 @@ impl App {
                 }
             }
             return vec![];
+        }
+        // Pane traversal must work inside text editors too (without inserting h/l).
+        if matches!(key.code, K::Tab | K::BackTab) {
+            return self.cycle_pane(key.code == K::BackTab || key.modifiers.contains(M::SHIFT));
         }
         if self.focus == Focus::Search {
             match key.code {
@@ -682,6 +972,10 @@ impl App {
                     let query = self.query.value.trim().to_owned();
                     if query.is_empty() {
                         return vec![];
+                    }
+                    if self.view != View::Search {
+                        self.view = View::Search;
+                        self.rebuild();
                     }
                     let mut actions = if self.search_pending.is_none()
                         && self.catalog_view == View::Search
@@ -697,10 +991,7 @@ impl App {
                     }
                     return actions;
                 }
-                K::Down | K::Tab => {
-                    self.focus = Focus::Titles;
-                    return vec![];
-                }
+                K::Down => return self.focus_pane(Pane::Results),
                 K::Up if !self.library.recent_searches.is_empty() => {
                     self.query = Input::new(self.library.recent_searches[0].clone());
                     self.search_changed();
@@ -716,7 +1007,7 @@ impl App {
         }
         if self.focus == Focus::EpisodeFilter {
             match key.code {
-                K::Esc | K::Enter | K::Tab => self.focus = Focus::Episodes,
+                K::Esc | K::Enter => self.focus = Focus::Episodes,
                 _ => {
                     if self.episode_filter.key(key) {
                         self.episodes.select(Some(0));
@@ -726,49 +1017,21 @@ impl App {
             return vec![];
         }
         match key.code {
-            K::Char('/') => {
-                self.view = View::Search;
-                self.focus = Focus::Search;
-                self.rebuild();
-            }
+            K::Char('/') | K::Char('1') => return self.focus_pane(Pane::Search),
             K::Char('q') => return self.quit(),
             K::Char('?') => self.modal = Some(Modal::Help),
             K::Char(':') => self.open_commands(),
             K::Char(',') => self.modal = Some(Modal::Settings),
             K::Char('!') => self.modal = Some(Modal::Diagnostics),
-            K::Char('1') => {
-                self.view = View::Search;
-                self.focus = Focus::Search;
-                self.rebuild();
-            }
-            K::Char('2') => {
-                let view = if self.query.value.trim().is_empty() {
-                    View::Discover
-                } else {
-                    View::Search
-                };
-                let actions = self.switch_view(view);
-                self.focus = Focus::Titles;
-                return actions;
-            }
-            K::Char('3') => return self.switch_view(View::Continue),
-            K::Char('4') => return self.switch_view(View::Watchlist),
-            K::Char('5') => return self.switch_view(View::Offline),
-            K::Char('0') => self.focus = Focus::Details,
-            K::Tab | K::Char('l') | K::Right => {
-                self.focus = match self.focus {
-                    Focus::Titles => Focus::Episodes,
-                    Focus::Episodes => Focus::Details,
-                    _ => Focus::Titles,
-                }
-            }
-            K::BackTab | K::Char('h') | K::Left => {
-                self.focus = match self.focus {
-                    Focus::Details => Focus::Episodes,
-                    Focus::Episodes => Focus::Titles,
-                    _ => Focus::Details,
-                }
-            }
+            K::Char('2') => return self.focus_pane(Pane::Results),
+            K::Char('3') => return self.focus_pane(Pane::Continue),
+            K::Char('4') => return self.focus_pane(Pane::Watchlist),
+            K::Char('5') => return self.focus_pane(Pane::Offline),
+            K::Char('0') => return self.focus_pane(Pane::Details),
+            K::Char('6') => return self.focus_pane(Pane::Episodes),
+            K::Char('7') => return self.focus_pane(Pane::Activity),
+            K::Char('l') | K::Right => return self.cycle_pane(false),
+            K::Char('h') | K::Left => return self.cycle_pane(true),
             K::Esc => {
                 self.focus = Focus::Titles;
                 self.episode_filter = Input::default();
@@ -922,6 +1185,45 @@ impl App {
         }
         vec![]
     }
+    fn close_modal(&mut self) {
+        self.modal = self.audio_prompt.as_ref().map(|_| Modal::Audio);
+    }
+    fn move_audio(&mut self, delta: i32) {
+        if let Some(prompt) = self.audio_prompt.as_mut() {
+            let index = (prompt.state.selected().unwrap_or(0) as i32 + delta)
+                .clamp(0, prompt.tracks.len().saturating_sub(1) as i32)
+                as usize;
+            prompt
+                .state
+                .select((!prompt.tracks.is_empty()).then_some(index));
+        }
+    }
+    fn confirm_audio(&mut self) {
+        if let Some(prompt) = self.audio_prompt.take() {
+            let track = prompt
+                .state
+                .selected()
+                .and_then(|index| prompt.tracks.get(index))
+                .cloned();
+            if prompt.reply.send(track).is_err() {
+                self.playing = false;
+                self.notify("Audio selection expired; retry the episode", true);
+            } else {
+                self.notify("Starting player with the selected audio…", false);
+            }
+        }
+        self.modal = None;
+    }
+    fn cancel_playback(&mut self) -> Vec<Action> {
+        self.playback_id = self.playback_id.wrapping_add(1);
+        self.playing = false;
+        self.audio_prompt = None;
+        if self.modal == Some(Modal::Audio) {
+            self.modal = None;
+        }
+        self.notify("Playback cancelled / stopped", false);
+        vec![Action::CancelPlayback]
+    }
     fn open_commands(&mut self) {
         self.modal = Some(Modal::Commands);
         self.command_input = Input::default();
@@ -1005,6 +1307,14 @@ impl App {
                 (self.detail_scroll as i32 + delta).clamp(0, u16::MAX as i32) as u16;
             return;
         }
+        if self.focus == Focus::Activity {
+            self.activity_scroll =
+                (self.activity_scroll as i32 + delta).clamp(0, u16::MAX as i32) as u16;
+            return;
+        }
+        if !matches!(self.focus, Focus::Titles | Focus::Episodes) {
+            return;
+        }
         let count = if self.focus == Focus::Episodes {
             self.visible_episodes().len()
         } else {
@@ -1048,10 +1358,12 @@ impl App {
                 .iter()
                 .find(|e| e.anime.key() == anime.key() && e.episode.number == episode.number)
                 .map(|e| Media::Local(e.path.clone()));
+            self.playback_id = self.playback_id.wrapping_add(1);
             self.playing = true;
             self.playback_label = format!("{} · Ep {}", anime.title, episode.number);
             self.notify("Resolving stream…", false);
             return vec![Action::Play {
+                request_id: self.playback_id,
                 anime,
                 episode,
                 local,
@@ -1069,6 +1381,191 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn show_audio(
+        app: &mut App,
+        request_id: u64,
+    ) -> tokio::sync::oneshot::Receiver<Option<AudioTrack>> {
+        let (reply, receive) = tokio::sync::oneshot::channel();
+        let tracks = crate::audio::hls_tracks("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,NAME=\"Italian\",LANGUAGE=\"ita\",DEFAULT=YES\n#EXT-X-MEDIA:TYPE=AUDIO,NAME=\"English\",LANGUAGE=\"eng\"").expect("tracks");
+        app.message(Message::ChooseAudio {
+            request_id,
+            tracks,
+            reply,
+        });
+        receive
+    }
+
+    #[test]
+    fn audio_picker_waits_for_confirmation_and_returns_the_selected_language() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), true);
+        app.playing = true;
+        app.playback_id = 7;
+        let mut receive = show_audio(&mut app, 7);
+        assert_eq!(app.modal, Some(Modal::Audio));
+        assert!(
+            receive.try_recv().is_err(),
+            "do not launch before confirmation"
+        );
+        app.key(K::Down.into());
+        assert!(app.key(K::Enter.into()).is_empty());
+        let track = receive.try_recv().expect("choice").expect("track");
+        assert_eq!(track.language.as_deref(), Some("eng"));
+        assert!(app.playing, "the original player task continues");
+        assert!(app.modal.is_none());
+        assert!(app.audio_prompt.is_none());
+    }
+
+    #[test]
+    fn cancelling_audio_rejects_late_prompts_and_old_player_events() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), true);
+        app.playing = true;
+        app.playback_id = 7;
+        let mut receive = show_audio(&mut app, 7);
+        assert!(matches!(
+            app.key(K::Esc.into()).as_slice(),
+            [Action::CancelPlayback]
+        ));
+        assert!(!app.playing);
+        assert!(app.audio_prompt.is_none());
+        assert!(receive.try_recv().is_err());
+        let mut stale = show_audio(&mut app, 7);
+        assert!(stale.try_recv().is_err());
+        assert!(app.modal.is_none());
+        app.playing = true;
+        app.message(Message::PlaybackEnded {
+            request_id: 7,
+            result: Ok(()),
+        });
+        assert!(app.playing, "an old completion cannot clear a new request");
+    }
+
+    #[test]
+    fn audio_prompt_survives_quit_and_command_overlays_without_leaking_paste() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), true);
+        app.playing = true;
+        app.playback_id = 7;
+        app.modal = Some(Modal::Quit);
+        let _receive = show_audio(&mut app, 7);
+        assert_eq!(app.modal, Some(Modal::Quit));
+        app.key(K::Char('n').into());
+        assert_eq!(app.modal, Some(Modal::Audio));
+        app.focus = Focus::Search;
+        app.paste("not a search");
+        assert!(app.query.value.is_empty());
+        app.key(KeyEvent::new(K::Char('p'), M::CONTROL));
+        assert_eq!(app.modal, Some(Modal::Commands));
+        app.key(K::Esc.into());
+        assert_eq!(app.modal, Some(Modal::Audio));
+        app.key(KeyEvent::new(K::Char('x'), M::CONTROL));
+        assert!(app.audio_prompt.is_none());
+        assert!(!app.playing);
+    }
+
+    #[test]
+    fn tab_and_shift_tab_visit_every_pane_including_text_editors() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), true);
+        app.focus = Focus::Search;
+        for expected in Pane::ALL.into_iter().cycle().skip(1).take(16) {
+            app.key(K::Tab.into());
+            assert_eq!(app.pane(), expected);
+        }
+        for expected in Pane::ALL.into_iter().rev().cycle().take(16) {
+            app.key(K::BackTab.into());
+            assert_eq!(app.pane(), expected);
+        }
+        app.focus = Focus::EpisodeFilter;
+        app.episode_filter = Input::new("12");
+        app.key(K::Tab.into());
+        assert_eq!(app.pane(), Pane::Activity);
+        assert_eq!(app.episode_filter.value, "12");
+        app.focus = Focus::Search;
+        app.key(KeyEvent::new(K::Tab, M::SHIFT));
+        assert_eq!(app.pane(), Pane::Activity);
+        assert!(app.query.value.is_empty());
+    }
+
+    #[test]
+    fn search_submit_from_a_library_pane_returns_to_search_results() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), true);
+        app.query = Input::new("frieren");
+        app.start_catalog(Some("frieren".into()));
+        app.switch_view(View::Watchlist);
+        app.focus_pane(Pane::Search);
+        app.key(K::Enter.into());
+        assert_eq!(app.view, View::Search);
+        assert_eq!(app.pane(), Pane::Results);
+    }
+
+    #[test]
+    fn tabbing_past_empty_offline_library_keeps_online_details_cached() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), true);
+        crate::demo::populate(&mut app);
+        let count = app.details.len();
+        app.focus_pane(Pane::Offline);
+        app.focus_pane(Pane::Results);
+        assert_eq!(app.details.len(), count);
+    }
+
+    #[test]
+    fn offline_scan_result_preserves_focus_and_selected_title() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), true);
+        let offline = ["a", "b"]
+            .map(|id| OfflineEpisode {
+                anime: sample(ProviderId::AnimeWorld, id),
+                episode: Episode {
+                    id: "local".into(),
+                    number: "1".into(),
+                    title: String::new(),
+                },
+                path: "/tmp/episode.mkv".into(),
+            })
+            .to_vec();
+        app.offline = offline.clone();
+        app.switch_view(View::Offline);
+        app.titles.select(Some(1));
+        app.focus = Focus::Episodes;
+        app.message(Message::Offline(Ok(offline)));
+        assert_eq!(app.titles.selected(), Some(1));
+        assert_eq!(app.focus, Focus::Episodes);
+    }
+
+    #[test]
+    fn offline_detail_debounce_requests_a_redraw_even_without_effects() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), true);
+        assert!(!app.needs_tick_redraw());
+        let anime = sample(ProviderId::AnimeWorld, "offline");
+        app.offline.push(OfflineEpisode {
+            anime: anime.clone(),
+            episode: Episode {
+                id: "local".into(),
+                number: "1".into(),
+                title: String::new(),
+            },
+            path: "/tmp/episode.mkv".into(),
+        });
+        app.switch_view(View::Offline);
+        app.detail_pending = Some(Instant::now() - Duration::from_secs(1));
+        assert!(app.needs_tick_redraw());
+        assert!(app.on_tick().is_empty());
+        assert_eq!(app.details[&anime.key()].1.len(), 1);
+        assert!(!app.needs_tick_redraw());
+    }
+
+    #[test]
+    fn non_list_panes_do_not_move_the_title_selection() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), true);
+        crate::demo::populate(&mut app);
+        let selected = app.titles.selected();
+        for focus in [Focus::Search, Focus::Activity, Focus::Details] {
+            app.focus = focus;
+            app.move_selection(3);
+            assert_eq!(app.titles.selected(), selected);
+        }
+        assert_eq!(app.detail_scroll, 3);
+        assert_eq!(app.activity_scroll, 3);
+    }
+
     #[test]
     fn old_search_results_cannot_replace_new_query() {
         let mut app = App::new(Config::default(), Library::default(), "test".into(), true);

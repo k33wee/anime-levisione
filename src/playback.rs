@@ -1,6 +1,7 @@
 #[cfg(unix)]
 use crate::store::Progress;
 use crate::{
+    audio::AudioTrack,
     events::Message,
     model::{Anime, Episode},
     provider::{Stream, http::USER_AGENT},
@@ -30,6 +31,25 @@ impl Media {
         }
     }
 }
+pub struct PlayRequest {
+    pub id: u64,
+    pub media: Media,
+    pub anime: Anime,
+    pub episode: Episode,
+    pub resume: f64,
+    pub audio: Option<AudioTrack>,
+    pub audio_warning: Option<String>,
+}
+
+fn is_vlc(config: &Config) -> bool {
+    Path::new(&config.player)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.eq_ignore_ascii_case("vlc"))
+}
+pub fn supports_audio_choice(config: &Config) -> bool {
+    is_mpv(config) || is_vlc(config)
+}
 pub fn is_mpv(config: &Config) -> bool {
     Path::new(&config.player)
         .file_stem()
@@ -53,19 +73,15 @@ pub async fn diagnostic_tail(reader: impl AsyncRead + Unpin) -> String {
     }
     crate::model::clean(&String::from_utf8_lossy(&tail))
 }
-pub async fn play(
-    config: Config,
-    media: Media,
-    anime: Anime,
-    episode: Episode,
-    resume: f64,
-    tx: mpsc::UnboundedSender<Message>,
-) -> Result<()> {
-    let mpv = is_mpv(&config);
-    let temp = tempfile::Builder::new()
-        .prefix("anime-levisione-")
-        .tempdir()?;
-    let socket = temp.path().join("mpv.sock");
+fn player_command(config: &Config, request: &PlayRequest, _socket: &Path) -> Command {
+    let PlayRequest {
+        media,
+        anime,
+        episode,
+        resume,
+        audio,
+        ..
+    } = request;
     let mut command = Command::new(&config.player);
     command
         .args(&config.player_args)
@@ -73,7 +89,7 @@ pub async fn play(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    if mpv {
+    if is_mpv(config) {
         command
             .arg("--no-terminal")
             .arg("--keep-open=no")
@@ -82,8 +98,8 @@ pub async fn play(
                 anime.title, episode.number
             ));
         #[cfg(unix)]
-        command.arg(format!("--input-ipc-server={}", socket.display()));
-        if resume.is_finite() && resume > 3.0 {
+        command.arg(format!("--input-ipc-server={}", _socket.display()));
+        if resume.is_finite() && *resume > 3.0 {
             command.arg(format!("--start={resume:.0}"));
         }
         if let Media::Remote(s) = &media {
@@ -91,14 +107,19 @@ pub async fn play(
                 .arg(format!("--referrer={}", s.referer))
                 .arg(format!("--user-agent={USER_AGENT}"));
         }
+        if let Some(track) = audio {
+            if let Some(language) = &track.language {
+                command.arg("--aid=auto").arg(format!("--alang={language}"));
+            } else {
+                command
+                    .arg("--alang=")
+                    .arg(format!("--aid={}", track.index + 1));
+            }
+        }
         command.arg("--");
-    } else if Path::new(&config.player)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .is_some_and(|s| s.eq_ignore_ascii_case("vlc"))
-    {
+    } else if is_vlc(config) {
         command.arg("--play-and-exit");
-        if resume.is_finite() && resume > 3.0 {
+        if resume.is_finite() && *resume > 3.0 {
             command.arg(format!("--start-time={resume:.0}"));
         }
         if let Media::Remote(s) = &media {
@@ -106,16 +127,57 @@ pub async fn play(
                 .arg(format!("--http-referrer={}", s.referer))
                 .arg(format!("--http-user-agent={USER_AGENT}"));
         }
+        if let Some(track) = audio {
+            // A startup language survives VLC's HLS track-ID recreation. Clear
+            // numeric overrides in player_args before applying this choice.
+            command.arg("--audio-track-id=-1");
+            if let Some(language) = &track.language {
+                command
+                    .arg("--audio-track=-1")
+                    .arg(format!("--audio-language={language}"));
+            } else {
+                command
+                    .arg("--audio-language=any")
+                    .arg(format!("--audio-track={}", track.index));
+            }
+        }
         command.arg("--");
     }
     command.arg(media.source());
+    command
+}
+
+pub async fn play(
+    config: Config,
+    request: PlayRequest,
+    tx: mpsc::UnboundedSender<Message>,
+) -> Result<()> {
+    let mpv = is_mpv(&config);
+    let temp = tempfile::Builder::new()
+        .prefix("anime-levisione-")
+        .tempdir()?;
+    let socket = temp.path().join("mpv.sock");
+    let mut command = player_command(&config, &request, &socket);
+    let PlayRequest {
+        id,
+        media: _,
+        anime,
+        episode,
+        resume,
+        audio,
+        audio_warning,
+    } = request;
     let mut child = command.spawn().with_context(|| {
         format!(
             "Cannot start '{}'; install mpv or set player in config.toml",
             config.player
         )
     })?;
-    let _ = tx.send(Message::PlaybackStarted);
+    let _ = tx.send(Message::PlaybackStarted {
+        request_id: id,
+        audio: audio.map(|track| track.label),
+        warning: audio_warning,
+    });
     let stderr = child.stderr.take().context("Player stderr unavailable")?;
     let diagnostic = tokio::spawn(diagnostic_tail(stderr));
     #[cfg(unix)]
@@ -382,6 +444,115 @@ pub fn scan_offline(root: &Path) -> Result<Vec<OfflineEpisode>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn request(audio: Option<AudioTrack>) -> PlayRequest {
+        PlayRequest {
+            id: 7,
+            media: Media::Remote(Stream {
+                url: "https://cdn.example/playlist/42?token=signed"
+                    .parse()
+                    .expect("url"),
+                referer: "https://player.example/embed/42".into(),
+            }),
+            anime: serde_json::from_value(serde_json::json!({
+                "provider": "streamingcommunity", "id": "42-test", "title": "Test",
+            }))
+            .expect("anime"),
+            episode: Episode {
+                id: "9".into(),
+                number: "3".into(),
+                title: String::new(),
+            },
+            resume: 42.0,
+            audio,
+            audio_warning: None,
+        }
+    }
+    fn args(config: Config, request: &PlayRequest) -> Vec<String> {
+        player_command(&config, request, Path::new("/tmp/test.sock"))
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+    fn english() -> AudioTrack {
+        AudioTrack {
+            language: Some("eng".into()),
+            label: "English".into(),
+            index: 1,
+            default: false,
+        }
+    }
+
+    #[test]
+    fn selected_vlc_language_overrides_preferences_without_losing_resume_or_headers() {
+        let request = request(Some(english()));
+        let args = args(
+            Config {
+                player: "vlc".into(),
+                player_args: vec!["--audio-language=ita".into(), "--audio-track=0".into()],
+                ..Config::default()
+            },
+            &request,
+        );
+        assert!(args.contains(&"--audio-track-id=-1".into()));
+        assert_eq!(
+            args.iter()
+                .rfind(|arg| arg.starts_with("--audio-language=")),
+            Some(&"--audio-language=eng".into())
+        );
+        assert_eq!(
+            args.iter().rfind(|arg| arg.starts_with("--audio-track=")),
+            Some(&"--audio-track=-1".into())
+        );
+        assert!(args.contains(&"--start-time=42".into()));
+        assert!(args.contains(&"--http-referrer=https://player.example/embed/42".into()));
+        assert_eq!(args.last(), Some(&request.media.source()));
+        assert_eq!(args[args.len() - 2], "--");
+    }
+
+    #[test]
+    fn mpv_uses_language_and_unknown_file_tracks_use_audio_ordinals() {
+        let config = Config {
+            player: "mpv".into(),
+            ..Config::default()
+        };
+        let selected = args(config.clone(), &request(Some(english())));
+        assert!(selected.contains(&"--aid=auto".into()));
+        assert!(selected.contains(&"--alang=eng".into()));
+        assert!(selected.contains(&"--start=42".into()));
+        let unknown = AudioTrack {
+            language: None,
+            ..english()
+        };
+        assert!(args(config, &request(Some(unknown.clone()))).contains(&"--aid=2".into()));
+        let vlc = args(
+            Config {
+                player: "vlc".into(),
+                ..Config::default()
+            },
+            &request(Some(unknown)),
+        );
+        assert!(vlc.contains(&"--audio-track=1".into()));
+    }
+
+    #[test]
+    fn no_choice_preserves_the_configured_player_audio_defaults() {
+        let config = Config {
+            player: "vlc".into(),
+            player_args: vec!["--audio-language=ita".into()],
+            ..Config::default()
+        };
+        let args = args(config, &request(None));
+        assert_eq!(
+            args.iter()
+                .filter(|arg| arg.starts_with("--audio-"))
+                .count(),
+            1
+        );
+        assert!(args.contains(&"--audio-language=ita".into()));
+    }
+
     #[test]
     fn file_names_cannot_escape_directory() {
         assert_eq!(safe_name("../../evil/name\n"), "_.._evil_name_");
