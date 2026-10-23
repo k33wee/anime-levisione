@@ -29,6 +29,45 @@ fn world_cookie(html: &str) -> Option<String> {
         .map(|c| format!("{}={}; Path=/", &c[1], &c[2]))
 }
 
+/// StreamingCommunity's iframe path always identifies the title. Series use
+/// the episode's database id as a query parameter; putting it in the path can
+/// silently select an unrelated movie whose title happens to have that id.
+fn community_player_urls(base: &Url, anime: &Anime, episode: &Episode) -> Result<(Url, Url)> {
+    let (title_id, slug) = anime
+        .id
+        .split_once('-')
+        .context("Invalid StreamingCommunity title id")?;
+    let numeric = |value: &str| !value.is_empty() && value.chars().all(|c| c.is_ascii_digit());
+    if !numeric(title_id) || slug.is_empty() {
+        bail!("Invalid StreamingCommunity title id");
+    }
+    if !numeric(&episode.id) {
+        bail!("Invalid StreamingCommunity episode id");
+    }
+    let series = if anime.kind.trim().eq_ignore_ascii_case("tv") {
+        true
+    } else if anime.kind.trim().eq_ignore_ascii_case("movie") {
+        false
+    } else {
+        bail!("Invalid StreamingCommunity title type");
+    };
+    if !series && episode.id != title_id {
+        bail!("StreamingCommunity movie id does not match its title");
+    }
+    let mut watch = base.join(&format!("it/watch/{title_id}"))?;
+    let mut iframe = base.join(&format!("it/iframe/{title_id}"))?;
+    if series {
+        watch
+            .query_pairs_mut()
+            .append_pair("episode_id", &episode.id);
+        iframe
+            .query_pairs_mut()
+            .append_pair("episode_id", &episode.id)
+            .append_pair("next_episode", "1");
+    }
+    Ok((watch, iframe))
+}
+
 #[derive(Debug, Clone)]
 pub struct Stream {
     pub url: Url,
@@ -295,7 +334,10 @@ impl Provider {
             }
         }
     }
-    pub async fn resolve(&self, episode: &Episode) -> Result<Stream> {
+    pub async fn resolve(&self, anime: &Anime, episode: &Episode) -> Result<Stream> {
+        if anime.provider != self.id {
+            bail!("Title belongs to a different provider");
+        }
         match self.id {
             ProviderId::AnimeWorld => {
                 let token = self.session(false).await?;
@@ -317,16 +359,13 @@ impl Provider {
                 })
             }
             ProviderId::StreamingCommunity => {
-                if !episode.id.chars().all(|c| c.is_ascii_digit()) {
-                    bail!("Invalid StreamingCommunity episode id");
-                }
-                let watch = self.endpoint(&format!("it/watch/{}", episode.id))?;
+                let (watch, iframe) = community_player_urls(&self.base, anime, episode)?;
                 let raw = self
                     .http
                     .text(
                         self.http
                             .client
-                            .get(self.endpoint(&format!("it/iframe/{}", episode.id))?)
+                            .get(iframe)
                             .header("referer", watch.as_str()),
                     )
                     .await?;
@@ -554,4 +593,101 @@ pub async fn bounded<T>(future: impl std::future::Future<Output = Result<T>>) ->
     tokio::time::timeout(Duration::from_secs(30), future)
         .await
         .context("Provider timed out after 30 seconds; press r to retry or use the other source")?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn community_anime(id: &str, kind: &str) -> Anime {
+        Anime {
+            provider: ProviderId::StreamingCommunity,
+            id: id.into(),
+            title: "Test".into(),
+            aliases: vec![],
+            synopsis: String::new(),
+            year: String::new(),
+            kind: kind.into(),
+            status: String::new(),
+            score: String::new(),
+            episodes: 0,
+            dub: true,
+            genres: vec![],
+            page_url: String::new(),
+        }
+    }
+
+    #[test]
+    fn community_series_iframe_uses_title_path_and_episode_query() -> Result<()> {
+        let base = Url::parse("https://streamingcommunity.example/")?;
+        let anime = community_anime("6654-one-piece", "TV");
+        let episode = Episode {
+            id: "42659".into(),
+            number: "1".into(),
+            title: String::new(),
+        };
+        let (watch, iframe) = community_player_urls(&base, &anime, &episode)?;
+        assert_eq!(watch.path(), "/it/watch/6654");
+        assert_eq!(iframe.path(), "/it/iframe/6654");
+        assert!(
+            watch
+                .query_pairs()
+                .any(|(k, v)| k == "episode_id" && v == "42659")
+        );
+        let query = iframe
+            .query_pairs()
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(query.get("episode_id").map(|v| v.as_ref()), Some("42659"));
+        assert_eq!(query.get("next_episode").map(|v| v.as_ref()), Some("1"));
+        Ok(())
+    }
+
+    #[test]
+    fn community_movie_iframe_uses_title_id_without_episode_query() -> Result<()> {
+        let base = Url::parse("https://streamingcommunity.example/")?;
+        let anime = community_anime("42659-buddy-solitaire", "Movie");
+        let episode = Episode {
+            id: "42659".into(),
+            number: "1".into(),
+            title: String::new(),
+        };
+        let (watch, iframe) = community_player_urls(&base, &anime, &episode)?;
+        assert_eq!(
+            watch.as_str(),
+            "https://streamingcommunity.example/it/watch/42659"
+        );
+        assert_eq!(
+            iframe.as_str(),
+            "https://streamingcommunity.example/it/iframe/42659"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn community_player_rejects_empty_or_mismatched_ids() -> Result<()> {
+        let base = Url::parse("https://streamingcommunity.example/")?;
+        let episode = Episode {
+            id: "42659".into(),
+            number: "1".into(),
+            title: String::new(),
+        };
+        assert!(community_player_urls(&base, &community_anime("-slug", "TV"), &episode).is_err());
+        assert!(community_player_urls(&base, &community_anime("1-", "TV"), &episode).is_err());
+        assert!(
+            community_player_urls(
+                &base,
+                &community_anime("6654-one-piece", "TV"),
+                &Episode {
+                    id: String::new(),
+                    ..episode.clone()
+                },
+            )
+            .is_err()
+        );
+        assert!(
+            community_player_urls(&base, &community_anime("6654-one-piece", "Movie"), &episode,)
+                .is_err()
+        );
+        Ok(())
+    }
 }

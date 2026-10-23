@@ -81,14 +81,14 @@ async fn streamingcommunity_search_lists_episodes_and_resolves_a_stream() {
     .expect("search");
     assert!(!results.is_empty(), "no search results");
     let anime = results.first().expect("a search result").clone();
-    let (_anime, episodes) = bounded(registry.get(ProviderId::StreamingCommunity).episodes(anime))
+    let (anime, episodes) = bounded(registry.get(ProviderId::StreamingCommunity).episodes(anime))
         .await
         .expect("episodes");
     assert!(!episodes.is_empty(), "no episodes listed");
     let stream = bounded(
         registry
             .get(ProviderId::StreamingCommunity)
-            .resolve(&episodes[0]),
+            .resolve(&anime, &episodes[0]),
     )
     .await
     .expect("resolve");
@@ -148,11 +148,14 @@ async fn all_providers_resolve_a_live_domain() {
 #[ignore = "hits live providers"]
 async fn animeunity_search_lists_episodes_and_resolves_a_stream() {
     let registry = registry().await;
-    let (_anime, episodes) =
-        first_with_episodes(&registry, ProviderId::AnimeUnity, "frieren").await;
-    let stream = bounded(registry.get(ProviderId::AnimeUnity).resolve(&episodes[0]))
-        .await
-        .expect("resolve");
+    let (anime, episodes) = first_with_episodes(&registry, ProviderId::AnimeUnity, "frieren").await;
+    let stream = bounded(
+        registry
+            .get(ProviderId::AnimeUnity)
+            .resolve(&anime, &episodes[0]),
+    )
+    .await
+    .expect("resolve");
     assert!(!stream.url.host_str().unwrap_or_default().is_empty());
     // Signed VixCloud playlists must carry their token parameters.
     if stream
@@ -171,11 +174,14 @@ async fn animeunity_search_lists_episodes_and_resolves_a_stream() {
 #[ignore = "hits live providers"]
 async fn animeworld_search_lists_episodes_and_resolves_a_playable_file() {
     let registry = registry().await;
-    let (_anime, episodes) =
-        first_with_episodes(&registry, ProviderId::AnimeWorld, "frieren").await;
-    let stream = bounded(registry.get(ProviderId::AnimeWorld).resolve(&episodes[0]))
-        .await
-        .expect("resolve");
+    let (anime, episodes) = first_with_episodes(&registry, ProviderId::AnimeWorld, "frieren").await;
+    let stream = bounded(
+        registry
+            .get(ProviderId::AnimeWorld)
+            .resolve(&anime, &episodes[0]),
+    )
+    .await
+    .expect("resolve");
     let client = reqwest::Client::builder()
         .user_agent(anime_levisione::provider::http::USER_AGENT)
         .build()

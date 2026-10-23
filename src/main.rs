@@ -389,14 +389,15 @@ impl Effects {
                                 Some(media) => media,
                                 None => {
                                     let provider = registry.ready(anime.provider).await;
-                                    let mut stream = bounded(provider.resolve(&episode)).await;
+                                    let mut stream =
+                                        bounded(provider.resolve(&anime, &episode)).await;
                                     if stream.is_err()
                                         && registry.healable(anime.provider)
                                         && let Ok(fresh) =
                                             relocate(&registry, anime.provider, &tx, &provider)
                                                 .await
                                     {
-                                        stream = bounded(fresh.resolve(&episode)).await;
+                                        stream = bounded(fresh.resolve(&anime, &episode)).await;
                                     }
                                     playback::Media::Remote(stream?)
                                 }
@@ -418,13 +419,13 @@ impl Effects {
                     self.download = Some(tokio::spawn(async move {
                         let result = async {
                             let provider = registry.ready(anime.provider).await;
-                            let mut stream = bounded(provider.resolve(&episode)).await;
+                            let mut stream = bounded(provider.resolve(&anime, &episode)).await;
                             if stream.is_err()
                                 && registry.healable(anime.provider)
                                 && let Ok(fresh) =
                                     relocate(&registry, anime.provider, &tx, &provider).await
                             {
-                                stream = bounded(fresh.resolve(&episode)).await;
+                                stream = bounded(fresh.resolve(&anime, &episode)).await;
                             }
                             let stream = stream?;
                             let _ = tx.send(Message::DownloadStarted);
