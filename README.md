@@ -2,42 +2,30 @@
 
 # anime-levisione
 
-**Your next episode. One terminal.**<br>
-Il tuo prossimo episodio. Un solo terminale.
-
-[English](#english) · [Italiano](#italiano)
+**Find it. Pick your audio. Press play.**
 
 [![CI](https://github.com/k33wee/anime-levisione/actions/workflows/ci.yml/badge.svg)](https://github.com/k33wee/anime-levisione/actions/workflows/ci.yml)
-![Rust 1.88+](https://img.shields.io/badge/Rust-1.88%2B-e7a875?logo=rust&logoColor=white)
+![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-e7a875?logo=rust&logoColor=white)
+![Version](https://img.shields.io/badge/version-0.2.0-73e2a7)
 [![GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-73e2a7)](https://www.gnu.org/licenses/gpl-3.0.html)
 
-A keyboard-first anime browser inspired by lazygit. Built in Rust, with room for your mouse.
+[English](README.md) · [Italiano](README.it.md)
 
 </div>
 
-![anime-levisione: search results, anime details, episodes, watchlist and activity in the offline demo](docs/screenshots/library.png)
+anime-levisione is a keyboard-first anime browser that behaves the way lazygit does: the interface stays out of your way and everything is a keypress away. It searches AnimeWorld, AnimeUnity and StreamingCommunity at the same time, remembers where you stopped watching, and hands playback to VLC or mpv with the audio track you asked for.
 
-<details>
-<summary><strong>Choose your audio before pressing play / Scegli la lingua prima di partire</strong></summary>
+The providers are Italian, so most titles come with Italian subtitles and many with an Italian dub. They also keep changing domains — when that happens, anime-levisione goes looking for the new address on its own and gets out of your way again.
 
-![Pre-play audio picker offering Italian and English](docs/screenshots/audio-picker.png)
+Since 0.2.0 the same core powers an Android app too: a poster-first home screen, offline downloads, and a player that asks which language you want *before* the episode starts, Netflix-style chrome included.
 
-*Captured from the running TUI: offline demo above, local bilingual sample here.*<br>
-*Catture della TUI in esecuzione: demo offline sopra, file di esempio bilingue qui.*
+| Terminal | Android |
+| :---: | :---: |
+| ![TUI: search results, details, episodes, watchlist](docs/screenshots/library.png) | <img src="docs/screenshots/android-home.png" width="230" alt="Android home with poster rails"> <img src="docs/screenshots/android-player-audio.png" width="230" alt="Pre-play audio picker"> <img src="docs/screenshots/android-fullscreen.png" width="230" alt="Fullscreen player in landscape"> |
 
-</details>
+## Install (terminal)
 
-## English
-
-### Less browsing. More watching.
-
-- **Three sources, one search:** AnimeWorld, AnimeUnity and StreamingCommunity, with automatic domain discovery.
-- **Your library:** watchlist, resume, offline downloads and optional AniList sync.
-- **Your controls:** keyboard + mouse, adaptive panes, VLC/mpv and a pre-play audio-language picker.
-
-### Install
-
-Needs **Rust 1.88+** and **VLC or mpv**. Add `ffmpeg` for downloads; `ffprobe` is optional for file audio metadata. Linux, macOS and Windows/WSL.
+You need **Rust 1.88+** and **VLC or mpv**. Add `ffmpeg` if you want downloads; `ffprobe` is optional and only used to detect audio languages in local files. Linux, macOS and Windows/WSL.
 
 ```sh
 git clone https://github.com/k33wee/anime-levisione
@@ -45,129 +33,76 @@ cd anime-levisione
 cargo install --path crates/tui --locked
 ```
 
-### Go
+Then:
 
 ```sh
-anime-levisione "frieren"                    # search and browse
-anime-levisione --demo                       # preview: no network or saved data
-anime-levisione --player mpv                 # override the player
-anime-levisione --private                    # no AniList or automatic history
-anime-levisione search "naruto" --json       # script-friendly search
-anime-levisione doctor                       # check your setup
+anime-levisione "frieren"       # search and browse
+anime-levisione --demo          # offline preview, no network, no saved data
+anime-levisione --player mpv    # override the player
+anime-levisione --private       # no AniList, no automatic history
+anime-levisione doctor          # check players, config and providers
 ```
 
-### Keep your hands on the keyboard
+Everything fits from **60×18** up; smaller windows zoom the focused pane.
 
 | Key | Action |
 | --- | --- |
 | `/` | Search |
-| `Tab` / `Shift+Tab` · `0`–`7` | Switch / jump to a pane |
-| `j/k` · `↑/↓` · `PgUp/PgDn` | Navigate |
-| `Enter` · `s` · `n` | Open episodes / play · restart · next episode |
+| `Tab` / `Shift+Tab` · `0`–`7` | Switch / jump to pane |
+| `j/k` · arrows | Navigate |
+| `Enter` · `s` · `n` | Episodes / restart / next episode |
 | `w` · `m` · `d` | Watchlist · mark watched · download |
 | `Ctrl+x` · `Ctrl+d` | Stop playback · cancel download |
-| `?` · `:` · `q` | All shortcuts · commands · quit |
+| `?` · `:` · `q` | Shortcuts · command palette · quit |
 
-Click to focus a pane or select a row; use the wheel to navigate. All panes fit at **60×18+**; smaller windows zoom the focused pane.
+The mouse works too: click to focus a pane or pick a row, wheel to scroll.
 
-<details>
-<summary><strong>Audio, players & settings</strong></summary>
+**Audio.** When an episode has more than one language you get a picker before playback; pick with the arrows and confirm with `Enter`. HLS needs no extra tools, other files use `ffprobe` when available, and when in doubt the player default applies.
 
-- **Audio:** multiple languages trigger a picker. Select with arrows or a click, then `Enter`; `Esc` cancels. HLS metadata needs no extra tool; other files use optional `ffprobe`. Unavailable metadata falls back to the player default. `a` filters the catalogue, not playback audio.
-- **Players:** VLC is the default when installed; its language is chosen at startup. mpv also saves playback progress automatically. With VLC, use `m` to mark episodes watched.
-- **Settings:** `,` shows paths. Edit `config.toml` for `player`, `player_args`, download directory or provider mirrors. `--data-dir <path>` keeps a separate library.
-- **AniList:** [create an OAuth client](https://anilist.co/settings/developer), then run `anime-levisione login --client-id YOUR_ID` — or log in from the TUI (command palette → *AniList login & sync status*). Sync is opt-in; `logout` disconnects it. Private mode disables AniList entirely.
+**AniList, opt-in.** [Create an OAuth client](https://anilist.co/settings/developer), then `anime-levisione login --client-id YOUR_ID` — or log in from the command palette. Sync pushes your watchlist and progress but never downgrades what's already on AniList. `logout` disconnects; `--private` keeps the app from ever talking to AniList or writing history.
 
-### Development
+**Files.** `,` shows where everything lives. `config.toml` holds player, player args, download folder and provider mirrors; `--data-dir` keeps a separate library.
+
+## Android
+
+<p>
+<img src="docs/screenshots/android-home.png" width="180" alt="Home">
+<img src="docs/screenshots/android-detail.png" width="180" alt="Title details and episodes">
+<img src="docs/screenshots/android-player-controls.png" width="180" alt="Player controls">
+<img src="docs/screenshots/android-fullscreen.png" width="180" alt="Fullscreen landscape player">
+<img src="docs/screenshots/android-settings.png" width="180" alt="Settings">
+</p>
+
+Same providers, same library format as the terminal app, wrapped in a dark, artwork-first UI:
+
+- Home with featured title, continue-watching and per-provider rows; search with filters
+- My List, resume points, watched episodes, viewing history
+- Player with pre-play audio picker, subtitles, quality cap, fullscreen, autoplay-next
+- Offline downloads (native HLS/MP4, Wi-Fi only by default) that survive dead links
+- AniList metadata, login and sync; private mode; provider mirrors and diagnostics
+
+Build it from source — see [android/README.md](android/README.md) for the full guide:
+
+```sh
+./android/build-rust-android.sh
+./android/gradlew -p android :app:assembleDebug
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+CI also uploads a freshly built APK and AAB as artifacts of every run on `main`. Not available on Google Play: it's a scraping-based client, so it's side-load only.
+
+## Development
 
 ```sh
 make help        # all targets
 make ci          # fmt + clippy + tests + commitlint (run before pushing)
-make act         # replay the GitHub workflow locally with act (needs Docker)
-make hooks       # install the .githooks commit-msg / pre-push hooks
+make bindings    # regenerate the Kotlin bindings after core API changes
+make hooks       # commit-msg / pre-push hooks
+make act         # replay the GitHub workflow locally (needs Docker)
 ```
 
-Commits follow [Conventional Commits](https://www.conventionalcommits.org), checked by commitlint in CI (`make commitlint`, or `FROM=main make commitlint` for a whole branch).
+Commits follow [Conventional Commits](https://www.conventionalcommits.org) and are checked by commitlint in CI. The workspace is split in three crates: `crates/core` (providers, AniList, library — everything portable, shared with Android through UniFFI), `crates/tui` (the terminal app) and `crates/bindgen` (Kotlin bindings generator). CI runs the Rust suite on Linux, macOS and Windows, and builds plus smoke-tests the Android app on emulators running Android 8 and 15.
 
-### Android
+## License
 
-The [Android app](android/README.md) has an artwork-led Home, Search, My List,
-continue watching, offline downloads, AniList sync, and a full-screen player with
-pre-play audio-language selection. It shares the TUI's providers and library
-format; see the Android guide for APK builds and emulator tests.
-
-### Layout
-
-A Cargo workspace: `crates/core` holds the portable logic (providers, AniList, library) shared with the [Android app](android/README.md) through UniFFI; `crates/tui` is this terminal app. `make bindings` regenerates the Kotlin bindings after core API changes.
-
-</details>
-
-## Italiano
-
-<details>
-<summary><strong>Apri la guida in italiano</strong></summary>
-
-### Meno ricerche. Più episodi.
-
-- **Tre fonti, una ricerca:** AnimeWorld, AnimeUnity e StreamingCommunity, con rilevamento automatico dei nuovi domini.
-- **La tua libreria:** watchlist, ripresa della visione, download offline e sincronizzazione AniList facoltativa.
-- **I tuoi comandi:** tastiera e mouse, pannelli adattivi, VLC/mpv e scelta della lingua prima della riproduzione.
-
-### Installa
-
-Servono **Rust 1.88+** e **VLC o mpv**. Aggiungi `ffmpeg` per scaricare; `ffprobe` è facoltativo per rilevare le lingue nei file. Linux, macOS e Windows/WSL.
-
-```sh
-git clone https://github.com/k33wee/anime-levisione
-cd anime-levisione
-cargo install --path crates/tui --locked
-```
-
-### Parti
-
-```sh
-anime-levisione "frieren"                    # cerca e sfoglia
-anime-levisione --demo                       # anteprima: niente rete o salvataggi
-anime-levisione --player mpv                 # scegli un altro player
-anime-levisione --private                    # niente AniList o cronologia automatica
-anime-levisione search "naruto" --json       # ricerca per script
-anime-levisione doctor                       # controlla la configurazione
-```
-
-### Tutto da tastiera
-
-| Tasto | Azione |
-| --- | --- |
-| `/` | Cerca |
-| `Tab` / `Shift+Tab` · `0`–`7` | Cambia pannello / vai direttamente a un pannello |
-| `j/k` · `↑/↓` · `PgUp/PgDn` | Naviga |
-| `Enter` · `s` · `n` | Apri gli episodi / riproduci · ricomincia · episodio successivo |
-| `w` · `m` · `d` | Watchlist · segna come visto · scarica |
-| `Ctrl+x` · `Ctrl+d` | Ferma la riproduzione · annulla il download |
-| `?` · `:` · `q` | Tutti i comandi · palette comandi · esci |
-
-Clicca per attivare un pannello o selezionare una riga; usa la rotella per navigare. Tutti i pannelli sono visibili da **60×18**; nelle finestre più piccole viene ingrandito quello attivo.
-
-### Audio, player e impostazioni
-
-- **Audio:** se ci sono più lingue, scegli con le frecce o un clic e conferma con `Enter`; `Esc` annulla. HLS non richiede strumenti extra; per gli altri file si usa `ffprobe`, se disponibile. Senza metadati si avvia l'audio predefinito. `a` filtra il catalogo, non cambia la traccia audio.
-- **Player:** VLC è il predefinito, se installato; la lingua viene impostata all'avvio. mpv salva anche il progresso automaticamente. Con VLC, usa `m` per segnare gli episodi come visti.
-- **Impostazioni:** `,` mostra i percorsi. In `config.toml` puoi cambiare `player`, `player_args`, cartella dei download e domini alternativi. `--data-dir <percorso>` usa una libreria separata.
-- **AniList:** [crea un client OAuth](https://anilist.co/settings/developer), poi esegui `anime-levisione login --client-id IL_TUO_ID` — oppure accedi direttamente dalla TUI (palette comandi → *AniList login & sync status*). La sincronizzazione è facoltativa; `logout` la scollega. La modalità privata disattiva completamente AniList.
-
-### Sviluppo
-
-```sh
-make help        # tutti i target
-make ci          # fmt + clippy + test + commitlint (da lanciare prima del push)
-make act         # ripete la workflow GitHub in locale con act (serve Docker)
-make hooks       # installa gli hook .githooks (commit-msg / pre-push)
-```
-
-I commit seguono i [Conventional Commits](https://www.conventionalcommits.org), verificati da commitlint in CI (`make commitlint`, oppure `FROM=main make commitlint` per un intero branch).
-
-</details>
-
----
-
-**GPL-3.0-only** · No warranty / Nessuna garanzia.
+GPL-3.0-only. This project is not affiliated with AnimeWorld, AnimeUnity, StreamingCommunity or AniList, and ships no content: it's a player for services you already use, so it comes with no warranty and a modicum of common sense.
