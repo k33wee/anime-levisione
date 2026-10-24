@@ -42,7 +42,7 @@ Needs **Rust 1.88+** and **VLC or mpv**. Add `ffmpeg` for downloads; `ffprobe` i
 ```sh
 git clone https://github.com/k33wee/anime-levisione
 cd anime-levisione
-cargo install --path .
+cargo install --path crates/tui --locked
 ```
 
 ### Go
@@ -89,6 +89,13 @@ make hooks       # install the .githooks commit-msg / pre-push hooks
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org), checked by commitlint in CI (`make commitlint`, or `FROM=main make commitlint` for a whole branch).
 
+### Android
+
+The [Android app](android/README.md) has an artwork-led Home, Search, My List,
+continue watching, offline downloads, AniList sync, and a full-screen player with
+pre-play audio-language selection. It shares the TUI's providers and library
+format; see the Android guide for APK builds and emulator tests.
+
 ### Layout
 
 A Cargo workspace: `crates/core` holds the portable logic (providers, AniList, library) shared with the [Android app](android/README.md) through UniFFI; `crates/tui` is this terminal app. `make bindings` regenerates the Kotlin bindings after core API changes.
@@ -113,7 +120,7 @@ Servono **Rust 1.88+** e **VLC o mpv**. Aggiungi `ffmpeg` per scaricare; `ffprob
 ```sh
 git clone https://github.com/k33wee/anime-levisione
 cd anime-levisione
-cargo install --path .
+cargo install --path crates/tui --locked
 ```
 
 ### Parti
