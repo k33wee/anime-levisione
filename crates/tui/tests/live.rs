@@ -60,6 +60,7 @@ async fn anilist_lookup_enriches_streaming_titles() {
         dub: false,
         genres: vec![],
         page_url: String::new(),
+        cover_url: String::new(),
     };
     let matched = anilist::match_media(&anime, &results).expect("a confident match");
     assert_eq!(matched.year(), Some(2023));

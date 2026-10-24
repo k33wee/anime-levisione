@@ -13,5 +13,8 @@ pub mod store;
 #[cfg(feature = "uniffi")]
 pub mod api;
 
+#[cfg(all(target_os = "android", feature = "uniffi"))]
+mod android;
+
 #[cfg(feature = "uniffi")]
 uniffi::setup_scaffolding!();

@@ -629,6 +629,7 @@ mod tests {
             dub: true,
             genres: vec![],
             page_url: String::new(),
+            cover_url: String::new(),
         }
     }
 

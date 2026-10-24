@@ -1,0 +1,2 @@
+# Keep committed UniFFI output verbatim; upstream templates include trailing spaces.
+android/app/src/main/java/uniffi/** linguist-generated=true -whitespace

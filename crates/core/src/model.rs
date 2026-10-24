@@ -57,6 +57,8 @@ pub struct Anime {
     pub genres: Vec<String>,
     #[serde(default)]
     pub page_url: String,
+    #[serde(default)]
+    pub cover_url: String,
 }
 impl Anime {
     pub fn key(&self) -> String {
@@ -213,6 +215,7 @@ mod tests {
                 dub: false,
                 genres: vec![],
                 page_url: String::new(),
+                cover_url: String::new(),
             }
         }
         let mut animes = [

@@ -88,6 +88,7 @@ pub fn populate(app: &mut App) {
             dub: i % 3 == 1,
             genres: vec!["Adventure".into(), "Drama".into()],
             page_url: String::new(),
+            cover_url: String::new(),
         };
         let episodes = (1..=*count)
             .map(|n| Episode {

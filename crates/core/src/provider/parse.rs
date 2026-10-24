@@ -58,6 +58,14 @@ pub fn csrf(html: &str) -> Result<String> {
         .map(str::to_owned)
         .context("Provider page has no CSRF token; its layout may have changed")
 }
+fn image_url(raw: &str, base: &Url) -> String {
+    base.join(raw)
+        .ok()
+        .filter(|u| !raw.is_empty() && u.scheme() == "https")
+        .map(|u| u.to_string())
+        .unwrap_or_default()
+}
+
 pub fn unity_anime(v: &Value, base: &Url) -> Result<Anime> {
     let id = text(v, "id");
     if id.is_empty() {
@@ -91,6 +99,14 @@ pub fn unity_anime(v: &Value, base: &Url) -> Result<Anime> {
         page_url: base
             .join(&format!("anime/{}-{}", id, text(v, "slug")))?
             .to_string(),
+        cover_url: image_url(
+            &["cover", "imageurl"]
+                .iter()
+                .map(|k| text(v, k))
+                .find(|s| !s.is_empty())
+                .unwrap_or_default(),
+            base,
+        ),
     })
 }
 pub fn unity_search(raw: &str, base: &Url) -> Result<Vec<Anime>> {
@@ -180,6 +196,7 @@ pub fn world_search(raw: &str, base: &Url) -> Result<Vec<Anime>> {
                 .map(|a| a.iter().map(|v| text(v, "name")).collect())
                 .unwrap_or_default(),
             page_url: base.join(&format!("play/{link}.{id}"))?.to_string(),
+            cover_url: image_url(&text(v, "image"), base),
         });
     }
     Ok(result)
@@ -221,6 +238,16 @@ pub fn world_latest(raw: &str, base: &Url) -> Result<Vec<Anime>> {
             episodes: count,
             genres: vec![],
             page_url: base.join(&format!("play/{id}"))?.to_string(),
+            cover_url: element
+                .select(&selector("img"))
+                .next()
+                .and_then(|img| {
+                    img.value()
+                        .attr("src")
+                        .or_else(|| img.value().attr("data-src"))
+                })
+                .map(|raw| image_url(raw, base))
+                .unwrap_or_default(),
         });
     }
     if result.is_empty() {
@@ -325,7 +352,7 @@ fn year_of(v: &Value) -> String {
 
 /// Map a title row from search results or homepage sliders onto the shared
 /// Anime model. The id doubles as the URL path segment `it/titles/{id}-{slug}`.
-fn community_row(v: &Value, base: &Url) -> Option<Anime> {
+fn community_row(v: &Value, base: &Url, cdn: &str) -> Option<Anime> {
     let id = v["id"].as_u64()?;
     let slug = v["slug"].as_str()?;
     let name = clean(v["name"].as_str()?);
@@ -343,13 +370,25 @@ fn community_row(v: &Value, base: &Url) -> Option<Anime> {
         dub: !yes(v, "sub_ita"),
         genres: vec![],
         page_url: format!("{base}it/titles/{id}-{slug}"),
+        cover_url: v["images"]
+            .as_array()
+            .and_then(|images| images.iter().find(|image| image["type"] == "poster"))
+            .and_then(|image| image["filename"].as_str())
+            .filter(|name| !name.contains('/') && !cdn.is_empty())
+            .map(|name| {
+                image_url(
+                    &format!("{}/images/{name}", cdn.trim_end_matches('/')),
+                    base,
+                )
+            })
+            .unwrap_or_default(),
     })
 }
 
-fn community_rows(titles: &[Value], base: &Url) -> Result<Vec<Anime>> {
+fn community_rows(titles: &[Value], base: &Url, cdn: &str) -> Result<Vec<Anime>> {
     let rows = titles
         .iter()
-        .filter_map(|t| community_row(t, base))
+        .filter_map(|t| community_row(t, base, cdn))
         .collect::<Vec<_>>();
     if !titles.is_empty() && rows.is_empty() {
         bail!("StreamingCommunity title rows could not be parsed");
@@ -372,7 +411,11 @@ pub fn community_search(raw: &str, base: &Url) -> Result<Vec<Anime>> {
     let titles = page["props"]["titles"]
         .as_array()
         .context("StreamingCommunity search returned no titles")?;
-    community_rows(titles, base)
+    community_rows(
+        titles,
+        base,
+        page["props"]["cdn_url"].as_str().unwrap_or_default(),
+    )
 }
 
 pub fn community_latest(raw: &str, base: &Url) -> Result<Vec<Anime>> {
@@ -391,7 +434,11 @@ pub fn community_latest(raw: &str, base: &Url) -> Result<Vec<Anime>> {
         })
         .and_then(|s| s["titles"].as_array())
         .context("StreamingCommunity homepage sliders are empty")?;
-    community_rows(titles, base)
+    community_rows(
+        titles,
+        base,
+        page["props"]["cdn_url"].as_str().unwrap_or_default(),
+    )
 }
 
 /// Parse a title page: fills detail fields on the Anime and returns the
@@ -472,6 +519,30 @@ mod tests {
             r#"<div id="app" data-page="{}"></div>"#,
             json.replace('"', "&quot;")
         )
+    }
+    #[test]
+    fn artwork_is_extracted_without_changing_title_identity() -> Result<()> {
+        let base = Url::parse("https://provider.example/")?;
+        let unity = unity_anime(
+            &serde_json::json!({"id":1,"title_eng":"Title","cover":"https://cdn.example/poster.jpg"}),
+            &base,
+        )?;
+        assert_eq!(unity.cover_url, "https://cdn.example/poster.jpg");
+        let world = world_latest(
+            r#"<a class="poster" href="/play/title.1" title="Title Ep 1"><img src="https://cdn.example/a.jpg"></a>"#,
+            &base,
+        )?;
+        assert_eq!(world[0].cover_url, "https://cdn.example/a.jpg");
+        let sc = community_search(
+            &inertia_html(
+                r#"{"props":{"cdn_url":"https://cdn.example","titles":[{"id":1,"slug":"title","name":"Title","images":[{"type":"poster","filename":"cover.webp"}]}]}}"#,
+            ),
+            &base,
+        )?;
+        assert_eq!(sc[0].cover_url, "https://cdn.example/images/cover.webp");
+        assert!(image_url("file:///private", &base).is_empty());
+        assert!(image_url("javascript:alert(1)", &base).is_empty());
+        Ok(())
     }
     #[test]
     fn community_search_maps_rows_and_keeps_signed_embed_urls() -> Result<()> {

@@ -45,6 +45,7 @@ const SEARCH_QUERY: &str = "query ($q: String) {
             averageScore
             genres
             description(asHtml: false)
+            coverImage { extraLarge }
             startDate { year }
         }
     }
@@ -78,6 +79,13 @@ pub struct MediaEntry {
     pub genres: Vec<String>,
     pub description: Option<String>,
     pub start_date: Option<StartDate>,
+    pub cover_image: Option<MediaCover>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaCover {
+    pub extra_large: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -255,6 +263,18 @@ pub struct Client {
     next: Mutex<Instant>,
 }
 impl Client {
+    pub fn anonymous() -> Result<Self> {
+        Ok(Self {
+            http: Http::new()?,
+            token: RwLock::new(None),
+            user: RwLock::new(None),
+            next: Mutex::new(Instant::now()),
+        })
+    }
+    pub fn logout(&self) {
+        *self.token.write().expect("anilist token lock") = None;
+        *self.user.write().expect("anilist user lock") = None;
+    }
     pub fn open(dir: &Path) -> Result<Self> {
         let token = Token::load(dir);
         Ok(Self {
@@ -498,6 +518,7 @@ mod tests {
             dub: false,
             genres: vec![],
             page_url: String::new(),
+            cover_url: String::new(),
         }
     }
     fn entry(id: i64, names: &[&str], year: u32, format: &str, episodes: u32) -> MediaEntry {

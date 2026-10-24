@@ -35,9 +35,13 @@ clap = { version = "4", features = ["derive"], optional = true }
 
 [features]
 # `--features uniffi` builds the FFI facade for the Android app.
-uniffi = ["dep:uniffi"]
+uniffi = ["dep:uniffi", "dep:jni", "dep:rustls-platform-verifier"]
 # Lets the TUI CLI derive `clap::ValueEnum` on `ProviderId`.
 clap = ["dep:clap"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { version = "0.22", optional = true }
+rustls-platform-verifier = { version = "0.7", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

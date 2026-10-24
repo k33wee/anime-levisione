@@ -1349,6 +1349,7 @@ mod tests {
             dub: false,
             genres: vec![],
             page_url: String::new(),
+            cover_url: String::new(),
         };
         app.discovered = vec![anime.clone()];
         app.details.insert(anime.key(), (anime.clone(), vec![]));

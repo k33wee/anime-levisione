@@ -1786,6 +1786,7 @@ mod tests {
             dub: false,
             genres: vec![],
             page_url: String::new(),
+            cover_url: String::new(),
         }
     }
     #[test]

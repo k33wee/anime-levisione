@@ -1,0 +1,3 @@
+[bindings.kotlin]
+# Generate API-gated Android cleanup instead of desktop java.lang.ref.Cleaner.
+android = true
