@@ -13,6 +13,7 @@ import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -39,6 +40,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -169,21 +172,35 @@ fun LevisioneApp(vm: CatalogViewModel = viewModel()) {
 }
 
 @Composable
-private fun BrandHeader(destination: Destination, isPrivate: Boolean, search: () -> Unit) {
+internal fun BrandHeader(destination: Destination, isPrivate: Boolean, search: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(5.dp, 24.dp).clip(RoundedCornerShape(3.dp)).background(Accent))
-        Spacer(Modifier.width(9.dp))
-        Text("levisione", fontSize = 25.sp, fontWeight = FontWeight.Black, letterSpacing = (-1).sp)
-        Spacer(Modifier.weight(1f))
-        if (isPrivate)
-            AssistChip(
-                onClick = {},
-                label = { Text("Private", fontSize = 11.sp) },
-                leadingIcon = { Icon(Icons.Default.VisibilityOff, null, Modifier.size(14.dp)) },
+        Image(
+            painter = painterResource(R.drawable.ic_anime_levisione),
+            contentDescription = null,
+            modifier = Modifier.size(36.dp).clip(RoundedCornerShape(9.dp)),
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                stringResource(R.string.app_name),
+                fontSize = 22.sp,
+                lineHeight = 25.sp,
+                fontWeight = FontWeight.Black,
+                letterSpacing = (-0.6).sp,
+                modifier = Modifier.fillMaxWidth().testTag("brandName"),
             )
+            if (isPrivate)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(Icons.Default.VisibilityOff, null, Modifier.size(12.dp), tint = Muted)
+                    Text("Private", color = Muted, fontSize = 11.sp)
+                }
+        }
         if (destination != Destination.Search)
             IconButton(onClick = search) { Icon(Icons.Default.Search, "Search catalogue") }
     }

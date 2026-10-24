@@ -3,11 +3,27 @@
 package dev.keewee.animelevisione
 
 import android.content.pm.ActivityInfo
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.drawable.AdaptiveIconDrawable
+import android.graphics.drawable.Drawable
 import android.net.Uri
+import android.os.Build
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.media3.common.MimeTypes
 import androidx.media3.exoplayer.offline.Download
@@ -97,12 +113,79 @@ class AndroidSmokeTest {
 
     @Test
     fun launchesAndRecreatesWithNativeLibraryLoaded() {
-        compose.onNodeWithText("levisione").assertIsDisplayed()
+        compose.onNodeWithText("anime-levisione").assertIsDisplayed()
+        compose.onNodeWithText("levisione").assertDoesNotExist()
         compose.onNodeWithTag("navSearch").performClick()
         compose.onNodeWithTag("searchField").assertIsDisplayed()
         compose.activityRule.scenario.recreate()
         compose.onNodeWithTag("searchField").assertIsDisplayed()
         AnimeLib().use { assertTrue(it.watchlist().isEmpty()) }
+    }
+
+    @Test
+    fun launcherIconAndApplicationLabelUseTheNewBrand() {
+        val activity = compose.activity
+        assertEquals(
+            "anime-levisione",
+            activity.packageManager.getApplicationLabel(activity.applicationInfo),
+        )
+        val icon = activity.getDrawable(R.mipmap.ic_launcher)
+        assertTrue(
+            "The launcher must support the system's adaptive masks",
+            icon is AdaptiveIconDrawable,
+        )
+        icon as AdaptiveIconDrawable
+        fun assertNotBlank(drawable: Drawable) {
+            val bitmap = Bitmap.createBitmap(192, 192, Bitmap.Config.ARGB_8888)
+            try {
+                drawable.setBounds(0, 0, 192, 192)
+                drawable.draw(Canvas(bitmap))
+                val pixels = IntArray(192 * 192)
+                bitmap.getPixels(pixels, 0, 192, 0, 0, 192, 192)
+                assertTrue(
+                    "Icon artwork must render, not just its background",
+                    pixels.any { Color.alpha(it) > 0 },
+                )
+            } finally {
+                bitmap.recycle()
+            }
+        }
+        assertNotBlank(icon.foreground)
+        if (Build.VERSION.SDK_INT >= 33) {
+            val monochrome = icon.monochrome
+            assertNotNull("Android 13+ must have a themed icon", monochrome)
+            assertNotBlank(monochrome!!)
+        }
+    }
+
+    @Test
+    fun fullBrandNameFitsANarrowHeaderInPrivateMode() {
+        compose.activity.runOnUiThread {
+            compose.activity.setContent {
+                LevisioneTheme {
+                    val density = LocalDensity.current
+                    CompositionLocalProvider(LocalDensity provides Density(density.density, 1.3f)) {
+                        Surface {
+                            Box(Modifier.width(320.dp)) { BrandHeader(Destination.Home, true, {}) }
+                        }
+                    }
+                }
+            }
+        }
+        compose.onNodeWithText("anime-levisione").assertIsDisplayed()
+        compose.onNodeWithText("Private").assertIsDisplayed()
+        compose.onNodeWithTag("brandName").performSemanticsAction(
+            SemanticsActions.GetTextLayoutResult
+        ) { action ->
+            val layouts = mutableListOf<TextLayoutResult>()
+            assertTrue(action(layouts))
+            assertTrue(layouts.isNotEmpty())
+            val layout = layouts.first()
+            assertFalse(
+                "Clipped: width=${layout.didOverflowWidth}, height=${layout.didOverflowHeight}, size=${layout.size}, paragraph=${layout.multiParagraph.width}x${layout.multiParagraph.height}",
+                layout.hasVisualOverflow,
+            )
+        }
     }
 
     @Test
