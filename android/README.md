@@ -5,6 +5,9 @@ Home rails, a hero feature, searchable poster grids, and a full-screen Media3 pl
 
 <img src="../docs/screenshots/android-home.png" alt="Android Home: featured title, poster rail and bottom navigation" width="300" />
 
+Screenshots show an offline fictional catalogue with original artwork and a
+synthetic test clip, not provider imagery. [Sources and regeneration](../docs/screenshots/README.md).
+
 ## What works
 
 | TUI feature | Android equivalent |

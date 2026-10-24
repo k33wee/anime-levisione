@@ -32,6 +32,8 @@ il catalogo.
 
 ![TUI: ricerca, dettagli, episodi e watchlist](docs/screenshots/library.png)
 
+*Catalogo dimostrativo offline: i titoli e le descrizioni mostrati sono inventati.*
+
 ### Installazione e avvio
 
 Servono **Rust 1.88+** e **VLC o mpv**. Installa `ffmpeg` per i download;
@@ -104,6 +106,9 @@ Il client mobile usa Compose e Media3: non servono player esterni, `ffmpeg` o
 <img src="docs/screenshots/android-detail.png" width="210" alt="Dettagli del titolo ed episodi">
 <img src="docs/screenshots/android-player-audio.png" width="210" alt="Scelta della lingua audio">
 </p>
+
+*Gli screenshot usano [illustrazioni originali e video sintetici](docs/screenshots/README.md),
+non locandine o fotogrammi dei provider.*
 
 - **Catalogo:** titolo in evidenza, righe per provider, filtri di ricerca e My List.
 - **Visione:** punti di ripresa, episodi visti, cronologia ed episodio successivo

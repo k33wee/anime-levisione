@@ -93,6 +93,15 @@ val bundledLicense by tasks.registering(Copy::class) {
     into(layout.buildDirectory.dir("generated/licenseAssets"))
 }
 android.sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/licenseAssets"))
+// Original artwork for documentation captures; never included in the release APK.
+val demoScreenshotAssets by tasks.registering(Sync::class) {
+    from(rootProject.file("../docs/screenshots/fixtures")) {
+        include("catalog.json", "*.png")
+        into("demo")
+    }
+    into(layout.buildDirectory.dir("generated/demoScreenshotAssets"))
+}
+android.sourceSets.getByName("androidTest").assets.srcDir(demoScreenshotAssets.map { it.destinationDir })
 tasks.named("preBuild") { dependsOn(verifyRustLibraries, bundledLicense) }
 
 val verifyReleaseSigning by tasks.registering {
@@ -130,4 +139,5 @@ dependencies {
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.kotlinx.coroutines.test)
 }

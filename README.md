@@ -31,6 +31,8 @@ support. VLC or mpv plays the video; the terminal stays available for browsing.
 
 ![TUI: search, title details, episodes and watchlist](docs/screenshots/library.png)
 
+*Offline sample catalogue: the titles and descriptions shown are fictional.*
+
 ### Install and run
 
 Requires **Rust 1.88+** and **VLC or mpv**. Install `ffmpeg` for downloads;
@@ -103,6 +105,9 @@ The mobile client uses Compose and Media3: no external player, `ffmpeg` or
 <img src="docs/screenshots/android-detail.png" width="210" alt="Title details and episodes">
 <img src="docs/screenshots/android-player-audio.png" width="210" alt="Audio language selection">
 </p>
+
+*Screenshots use [original sample artwork and synthetic video](docs/screenshots/README.md),
+not provider posters or footage.*
 
 - **Browse:** featured title, provider rows, search filters and My List.
 - **Watch:** resume points, watched episodes, history and optional autoplay-next.
