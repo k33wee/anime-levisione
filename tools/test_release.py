@@ -23,6 +23,15 @@ class ReleaseTests(unittest.TestCase):
         (self.root / "LICENSE").write_text("GPL-3.0-only test fixture")
         self.assets = self.root / "dist"
 
+    def test_cargo_version_parser_reads_only_workspace_section(self):
+        (self.root / "Cargo.toml").write_text(
+            '[workspace]\nresolver = "3"\n\n[workspace.package]\nversion = "0.2.1"\nlicense = "GPL-3.0-only"\n\n'
+            '[workspace.dependencies]\nanyhow = "1"\nserde = { version = "1", features = ["derive"] }\n'
+        )
+        self.assertEqual(release.cargo_workspace_version((self.root / "Cargo.toml").read_text()), "0.2.1")
+        with self.assertRaises(ValueError):
+            release.cargo_workspace_version('[package]\nversion = "9.9.9"\n')
+
     def test_matching_versions(self):
         self.assertEqual(release.check_versions("v0.2.1", self.root), ("0.2.1", 3))
 

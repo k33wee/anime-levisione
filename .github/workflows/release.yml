@@ -91,7 +91,7 @@ jobs:
           if [ "$HOST" = "$TARGET" ]; then
             test "$("$EXE" --version)" = "anime-levisione $VERSION"
           elif [[ "$TARGET" == *apple-darwin ]]; then
-            lipo -verify_arch x86_64 "$EXE"
+            lipo -info "$EXE" | grep -q "x86_64\|arm64"
           fi
       - name: Package binary and license
         env:

@@ -8,7 +8,6 @@ import re
 import shutil
 import tarfile
 import tempfile
-import tomllib
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,12 +21,26 @@ TARGETS = (
 )
 
 
+def cargo_workspace_version(text):
+    """Read [workspace.package] version without depending on Python 3.11+."""
+    section = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            section = stripped
+            continue
+        if section == "[workspace.package]":
+            match = re.fullmatch(r'version\s*=\s*"([^"]+)"', stripped)
+            if match:
+                return match[1]
+    raise ValueError("Cargo.toml has no workspace.package version")
+
+
 def check_versions(tag, root=ROOT):
     if not re.fullmatch("v" + VERSION, tag):
         raise ValueError("A stable release tag must have the form vMAJOR.MINOR.PATCH")
     version = tag[1:]
-    with (root / "Cargo.toml").open("rb") as source:
-        cargo_version = tomllib.load(source)["workspace"]["package"]["version"]
+    cargo_version = cargo_workspace_version((root / "Cargo.toml").read_text(encoding="utf-8"))
     gradle = (root / "android/app/build.gradle.kts").read_text(encoding="utf-8")
     names = re.findall(r'^\s*versionName\s*=\s*"([^"\r\n]+)"\s*$', gradle, re.MULTILINE)
     codes = re.findall(r"^\s*versionCode\s*=\s*([0-9]+)\s*$", gradle, re.MULTILINE)
