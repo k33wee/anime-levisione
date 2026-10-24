@@ -49,9 +49,21 @@ For several attached devices, use `adb -s SERIAL …`. A running emulator works 
 list available definitions with `"$ANDROID_HOME/emulator/emulator" -list-avds`.
 
 The APK is `app/build/outputs/apk/debug/app-debug.apk`, and the AAB is
-`app/build/outputs/bundle/debug/app-debug.aab` (relative to `android/`). Release
-builds need your own signing configuration before distribution. Gradle rejects
-missing Rust ABI libraries; rebuild the native core after changing Rust sources.
+`app/build/outputs/bundle/debug/app-debug.aab` (relative to `android/`). Gradle
+rejects missing Rust ABI libraries; rebuild the native core after changing Rust
+sources.
+
+### Release signing
+
+Tag pushes build a **signed** release APK/AAB and TUI binaries, published to
+GitHub Releases by `.github/workflows/release.yml`. The signing key never enters
+the repository: CI restores it from the `ANDROID_KEYSTORE_BASE64`,
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`
+secrets, and the APK certificate must match the `ANDROID_SIGNING_CERT_SHA256`
+repository variable before anything is published.
+
+To sign locally, export the same variables and run
+`./android/gradlew -p android :app:assembleRelease -PrequireReleaseSigning=true`.
 
 ## Test
 
@@ -95,6 +107,14 @@ runs on attached devices; disconnect personal phones or filter with
 - JNA uses its Android **AAR**, not the desktop JAR. Rustls' companion Kotlin AAR
   version is read from `Cargo.lock`; `AnimeApplication` initializes its JVM context
   before HTTPS. Certificate validation remains enabled.
+
+## Branding
+
+The launcher and in-app header use the original TV/anime mark from
+[`docs/branding/icon.svg`](../docs/branding/icon.svg). The full display name is
+`anime-levisione`. Adaptive launcher masks are supported from Android 8, with a
+monochrome variant for Android 13+ themed icons. See the
+[branding source and generator](../docs/branding/README.md) when editing the art.
 
 ## Layout
 

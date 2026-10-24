@@ -1,87 +1,151 @@
 <div align="center">
 
+<img src="docs/branding/icon.svg" width="96" alt="anime-levisione logo">
+
 # anime-levisione
 
-**Find it. Pick your audio. Press play.**
-
 [![CI](https://github.com/k33wee/anime-levisione/actions/workflows/ci.yml/badge.svg)](https://github.com/k33wee/anime-levisione/actions/workflows/ci.yml)
-![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-e7a875?logo=rust&logoColor=white)
-![Version](https://img.shields.io/badge/version-0.2.0-73e2a7)
+![Version](https://img.shields.io/badge/version-0.2.1-73e2a7)
 [![GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-73e2a7)](https://www.gnu.org/licenses/gpl-3.0.html)
 
-[English](README.md) · [Italiano](README.it.md)
+English · [Italiano](README.it.md)
 
 </div>
 
-anime-levisione is a keyboard-first anime browser that behaves the way lazygit does: the interface stays out of your way and everything is a keypress away. It searches AnimeWorld, AnimeUnity and StreamingCommunity at the same time, remembers where you stopped watching, and hands playback to VLC or mpv with the audio track you asked for.
+An anime browser for **desktop terminals** and **Android**. Both clients search
+AnimeWorld, AnimeUnity and StreamingCommunity, keep a watchlist and viewing
+progress, and let you choose the audio language before playback.
 
-The providers are Italian, so most titles come with Italian subtitles and many with an Italian dub. They also keep changing domains — when that happens, anime-levisione goes looking for the new address on its own and gets out of your way again.
+The providers serve mainly Italian-dubbed and Italian-subtitled content. Their
+domains change often; the shared Rust core checks alternative addresses when one
+stops working.
 
-Since 0.2.0 the same core powers an Android app too: a poster-first home screen, offline downloads, and a player that asks which language you want *before* the episode starts, Netflix-style chrome included.
+**[TUI](#tui)** · **[Android app](#android-app)** · [Development](#development)
 
-| Terminal | Android |
-| :---: | :---: |
-| ![TUI: search results, details, episodes, watchlist](docs/screenshots/library.png) | <img src="docs/screenshots/android-home.png" width="230" alt="Android home with poster rails"> <img src="docs/screenshots/android-player-audio.png" width="230" alt="Pre-play audio picker"> <img src="docs/screenshots/android-fullscreen.png" width="230" alt="Fullscreen player in landscape"> |
+---
 
-## Install (terminal)
+## TUI
 
-You need **Rust 1.88+** and **VLC or mpv**. Add `ffmpeg` if you want downloads; `ffprobe` is optional and only used to detect audio languages in local files. Linux, macOS and Windows/WSL.
+The desktop client: a pane-based interface with keyboard shortcuts and mouse
+support. VLC or mpv plays the video; the terminal stays available for browsing.
+
+![TUI: search, title details, episodes and watchlist](docs/screenshots/library.png)
+
+### Install and run
+
+Requires **Rust 1.88+** and **VLC or mpv**. Install `ffmpeg` for downloads;
+`ffprobe` is optional for audio-track detection outside HLS. Runs on Linux,
+macOS and Windows/WSL.
 
 ```sh
 git clone https://github.com/k33wee/anime-levisione
 cd anime-levisione
 cargo install --path crates/tui --locked
+
+anime-levisione "frieren"
 ```
 
-Then:
+Other ways to start it:
 
 ```sh
-anime-levisione "frieren"       # search and browse
-anime-levisione --demo          # offline preview, no network, no saved data
-anime-levisione --player mpv    # override the player
-anime-levisione --private       # no AniList, no automatic history
-anime-levisione doctor          # check players, config and providers
+anime-levisione --demo          # offline preview; no network or saved data
+anime-levisione --player mpv    # choose a player
+anime-levisione --private       # disable AniList and automatic history writes
+anime-levisione doctor          # check player, configuration and providers
 ```
 
-Everything fits from **60×18** up; smaller windows zoom the focused pane.
+### Controls
 
 | Key | Action |
 | --- | --- |
 | `/` | Search |
-| `Tab` / `Shift+Tab` · `0`–`7` | Switch / jump to pane |
-| `j/k` · arrows | Navigate |
-| `Enter` · `s` · `n` | Episodes / restart / next episode |
-| `w` · `m` · `d` | Watchlist · mark watched · download |
-| `Ctrl+x` · `Ctrl+d` | Stop playback · cancel download |
-| `?` · `:` · `q` | Shortcuts · command palette · quit |
+| `Tab` / `Shift+Tab`, `0`–`7` | Switch or jump to a pane |
+| `j/k`, arrows | Navigate |
+| `Enter` | Open a title / play the selected episode |
+| `s`, `n` | Restart / next episode |
+| `w`, `m`, `d` | Watchlist / mark watched / download |
+| `Ctrl+x`, `Ctrl+d` | Stop playback / cancel download |
+| `?`, `:`, `q` | Shortcuts / command palette / quit |
 
-The mouse works too: click to focus a pane or pick a row, wheel to scroll.
+Click to focus a pane or select a row; scroll with the wheel. The layout fits
+from 60×18; smaller windows show the focused pane. When several audio languages
+are available, select one with the arrows and confirm with `Enter`.
 
-**Audio.** When an episode has more than one language you get a picker before playback; pick with the arrows and confirm with `Enter`. HLS needs no extra tools, other files use `ffprobe` when available, and when in doubt the player default applies.
+### Library and AniList
 
-**AniList, opt-in.** [Create an OAuth client](https://anilist.co/settings/developer), then `anime-levisione login --client-id YOUR_ID` — or log in from the command palette. Sync pushes your watchlist and progress but never downgrades what's already on AniList. `logout` disconnects; `--private` keeps the app from ever talking to AniList or writing history.
+Watchlist, history and resume points are stored locally. Press `,` to see data
+paths; `config.toml` holds the player, its arguments, download directory and
+provider mirrors. Use `--data-dir` for a separate library.
 
-**Files.** `,` shows where everything lives. `config.toml` holds player, player args, download folder and provider mirrors; `--data-dir` keeps a separate library.
+AniList is optional. [Create an OAuth client](https://anilist.co/settings/developer),
+then run:
 
-## Android
+```sh
+anime-levisione login --client-id YOUR_ID
+anime-levisione sync
+anime-levisione logout
+```
+
+Login is also available in the command palette. Sync sends your watchlist and
+watched progress without lowering existing AniList progress. Private mode stops
+AniList requests and automatic history/search writes, but does not erase your
+existing library or prevent explicit watchlist edits.
+
+---
+
+## Android app
+
+The mobile client uses Compose and Media3: no external player, `ffmpeg` or
+`ffprobe` needed. Requires **Android 8.0 or newer**.
 
 <p>
-<img src="docs/screenshots/android-home.png" width="180" alt="Home">
-<img src="docs/screenshots/android-detail.png" width="180" alt="Title details and episodes">
-<img src="docs/screenshots/android-player-controls.png" width="180" alt="Player controls">
-<img src="docs/screenshots/android-fullscreen.png" width="180" alt="Fullscreen landscape player">
-<img src="docs/screenshots/android-settings.png" width="180" alt="Settings">
+<img src="docs/screenshots/android-home.png" width="210" alt="Android home">
+<img src="docs/screenshots/android-detail.png" width="210" alt="Title details and episodes">
+<img src="docs/screenshots/android-player-audio.png" width="210" alt="Audio language selection">
 </p>
 
-Same providers, same library format as the terminal app, wrapped in a dark, artwork-first UI:
+- **Browse:** featured title, provider rows, search filters and My List.
+- **Watch:** resume points, watched episodes, history and optional autoplay-next.
+- **Player:** audio selection before playback, subtitles, quality limit and
+  landscape fullscreen. Tap the video for play/pause, seeking and other controls;
+  they hide during playback rather than shrinking the video.
+- **Download:** HLS/MP4 episodes with audio and quality preferences, Wi-Fi only by
+  default. Completed downloads play from the app's cache even if the source link
+  expires. Pause, resume and remove them from Downloads.
+- **Settings:** AniList metadata/login/sync, private mode, provider mirrors and
+  connectivity diagnostics.
 
-- Home with featured title, continue-watching and per-provider rows; search with filters
-- My List, resume points, watched episodes, viewing history
-- Player with pre-play audio picker, subtitles, quality cap, fullscreen, autoplay-next
-- Offline downloads (native HLS/MP4, Wi-Fi only by default) that survive dead links
-- AniList metadata, login and sync; private mode; provider mirrors and diagnostics
+<img src="docs/screenshots/android-fullscreen.png" width="680" alt="Landscape fullscreen player">
 
-Build it from source — see [android/README.md](android/README.md) for the full guide:
+### Get the app
+
+Installers are attached to the [releases](https://github.com/k33wee/anime-levisione/releases/latest):
+
+- `anime-levisione-<version>-android.apk` — signed Android package (Android 8+)
+- `anime-levisione-<version>-<platform>.tar.gz|.zip` — TUI binaries for Linux
+  (glibc 2.35+), macOS (Apple Silicon and Intel) and Windows x86_64
+- `SHA256SUMS` — checksums for every asset
+
+Download on the phone and open the APK, or install with ADB:
+
+```sh
+adb install anime-levisione-<version>-android.apk
+```
+
+The release APK is signed with the project's release key. Debug builds (CI
+artifacts, `assembleDebug`) use a debug key: Android refuses to update one with
+the other, and uninstalling deletes the app's local library and downloads.
+Prefer the release APK.
+
+<details>
+<summary>Alternatives</summary>
+
+- Debug APK and AAB from any successful
+  [CI run on main](https://github.com/k33wee/anime-levisione/actions/workflows/ci.yml?query=branch%3Amain)
+  (`android-debug` artifact, GitHub sign-in required). The AAB is not directly
+  installable.
+- Build from source — set up Rust, JDK 17+, Android SDK and NDK as described in
+  the [Android build guide](android/README.md#build), then:
 
 ```sh
 ./android/build-rust-android.sh
@@ -89,20 +153,48 @@ Build it from source — see [android/README.md](android/README.md) for the full
 adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-CI also uploads a freshly built APK and AAB as artifacts of every run on `main`. Not available on Google Play: it's a scraping-based client, so it's side-load only.
+</details>
+
+### Library and account
+
+Downloads, library data and AniList credentials stay in app-private storage.
+Removing a download keeps your progress; uninstalling the app removes its data.
+The library format matches the TUI, but files and resume positions are not
+automatically shared between devices.
+
+To connect AniList, enter your OAuth client ID in Settings, authorize in the
+browser and paste the token or redirect URL. Private viewing disables new
+automatic history/search writes and AniList requests, not existing library data
+or explicit edits.
+
+[Android setup, tests and storage details →](android/README.md)
+
+---
 
 ## Development
 
 ```sh
-make help        # all targets
-make ci          # fmt + clippy + tests + commitlint (run before pushing)
-make bindings    # regenerate the Kotlin bindings after core API changes
-make hooks       # commit-msg / pre-push hooks
-make act         # replay the GitHub workflow locally (needs Docker)
+make help        # available targets
+make ci          # fmt, clippy, tests and commitlint; run before pushing
+make bindings    # regenerate Kotlin bindings after core API changes
+make hooks       # enable commit-msg and pre-push hooks
+make act         # run the GitHub workflow locally; requires Docker
 ```
 
-Commits follow [Conventional Commits](https://www.conventionalcommits.org) and are checked by commitlint in CI. The workspace is split in three crates: `crates/core` (providers, AniList, library — everything portable, shared with Android through UniFFI), `crates/tui` (the terminal app) and `crates/bindgen` (Kotlin bindings generator). CI runs the Rust suite on Linux, macOS and Windows, and builds plus smoke-tests the Android app on emulators running Android 8 and 15.
+| Path | Contents |
+| --- | --- |
+| `crates/core` | Providers, library and AniList; shared through UniFFI |
+| `crates/tui` | Terminal application |
+| `crates/bindgen` | Kotlin bindings generator |
+| `android` | Android application and build scripts |
+| `docs/branding` | [Editable icon and asset generation](docs/branding/README.md) |
+
+CI checks Rust on Linux, macOS and Windows, verifies generated bindings, and
+builds/lints/tests Android on API 26 and 35 emulators. Commits follow
+[Conventional Commits](https://www.conventionalcommits.org).
 
 ## License
 
-GPL-3.0-only. This project is not affiliated with AnimeWorld, AnimeUnity, StreamingCommunity or AniList, and ships no content: it's a player for services you already use, so it comes with no warranty and a modicum of common sense.
+GPL-3.0-only. No content is bundled. The project is not affiliated with its
+providers, AniList or Rai/Melevisione. Availability depends on the upstream
+services; use them in accordance with applicable rights and terms.
