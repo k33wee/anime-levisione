@@ -4,6 +4,17 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val releaseSigning = mapOf(
+    "ANDROID_KEYSTORE_FILE" to providers.environmentVariable("ANDROID_KEYSTORE_FILE").orNull,
+    "ANDROID_KEYSTORE_PASSWORD" to providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD").orNull,
+    "ANDROID_KEY_ALIAS" to providers.environmentVariable("ANDROID_KEY_ALIAS").orNull,
+    "ANDROID_KEY_PASSWORD" to providers.environmentVariable("ANDROID_KEY_PASSWORD").orNull,
+)
+check(releaseSigning.values.all { it.isNullOrBlank() } || releaseSigning.values.all { !it.isNullOrBlank() }) {
+    "Release signing requires all four ANDROID_KEYSTORE_FILE/PASSWORD and ANDROID_KEY_ALIAS/PASSWORD variables."
+}
+val hasReleaseSigning = releaseSigning.values.all { !it.isNullOrBlank() }
+
 android {
     namespace = "dev.keewee.animelevisione"
     compileSdk = 35
@@ -13,8 +24,8 @@ android {
         applicationId = "dev.keewee.animelevisione"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.2.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         testInstrumentationRunnerArguments["liveProviders"] =
             providers.gradleProperty("liveProviders").getOrElse("false")
@@ -23,9 +34,20 @@ android {
         }
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseSigning.getValue("ANDROID_KEYSTORE_FILE")!!)
+                storePassword = releaseSigning.getValue("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = releaseSigning.getValue("ANDROID_KEY_ALIAS")
+                keyPassword = releaseSigning.getValue("ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
@@ -66,7 +88,23 @@ val verifyRustLibraries by tasks.registering {
         }
     }
 }
-tasks.named("preBuild") { dependsOn(verifyRustLibraries) }
+val bundledLicense by tasks.registering(Copy::class) {
+    from(rootProject.file("../LICENSE"))
+    into(layout.buildDirectory.dir("generated/licenseAssets"))
+}
+android.sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/licenseAssets"))
+tasks.named("preBuild") { dependsOn(verifyRustLibraries, bundledLicense) }
+
+val verifyReleaseSigning by tasks.registering {
+    doLast {
+        check(hasReleaseSigning) { "Release signing is required; configure the ANDROID_KEYSTORE_* and ANDROID_KEY_* variables." }
+        check(file(releaseSigning.getValue("ANDROID_KEYSTORE_FILE")!!).isFile) { "Release keystore file does not exist." }
+    }
+}
+if (providers.gradleProperty("requireReleaseSigning").orNull == "true") {
+    // Variant tasks appear after this script; attach lazily so the guard always runs.
+    tasks.matching { it.name == "preReleaseBuild" }.configureEach { dependsOn(verifyReleaseSigning) }
+}
 
 dependencies {
     implementation(libs.androidx.activity.compose)

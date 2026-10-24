@@ -1,0 +1,251 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable tag to build (vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      version_code: ${{ steps.version.outputs.version_code }}
+      tag: ${{ steps.version.outputs.tag }}
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+      - name: Validate tag, source commit and both application versions
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          python3 tools/release.py check "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          git show-ref --verify "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
+          git merge-base --is-ancestor HEAD origin/main
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  checks:
+    needs: metadata
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.metadata.outputs.sha }}
+
+  tui:
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - name: Build TUI
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          cargo build --release --locked -p anime-levisione --target "$TARGET"
+          EXE="target/$TARGET/release/anime-levisione"
+          if [[ "$TARGET" == *windows-msvc ]]; then EXE="$EXE.exe"; fi
+          HOST="$(rustc -vV | awk '/^host:/ { print $2 }')"
+          if [ "$HOST" = "$TARGET" ]; then
+            test "$("$EXE" --version)" = "anime-levisione $VERSION"
+          elif [[ "$TARGET" == *apple-darwin ]]; then
+            lipo -verify_arch x86_64 "$EXE"
+          fi
+      - name: Package binary and license
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: python3 tools/release.py package "$VERSION" "$TARGET"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-tui-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  android-release:
+    needs: metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+      - name: Install Android SDK and NDK
+        run: |
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -1)"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - name: Build native libraries for all four ABIs
+        run: ./android/build-rust-android.sh
+      - name: Restore release signing key outside the workspace
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          umask 077
+          python3 - <<'PY'
+          import base64, os
+          from pathlib import Path
+          encoded = os.environ.get("KEYSTORE_BASE64", "")
+          if not encoded:
+              raise SystemExit("Configure the ANDROID_KEYSTORE_BASE64 repository secret")
+          key = Path(os.environ["RUNNER_TEMP"]) / "anime-levisione-release.jks"
+          key.write_bytes(base64.b64decode(encoded, validate=True))
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write(f"ANDROID_KEYSTORE_FILE={key}\n")
+          PY
+      - name: Build signed release APK and app bundle
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: >-
+          ./android/gradlew -p android :app:assembleRelease :app:bundleRelease
+          -PrequireReleaseSigning=true --no-daemon --console=plain
+      - name: Verify version, signing certificate and native packaging
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+          VERSION_CODE: ${{ needs.metadata.outputs.version_code }}
+          CERTIFICATE_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          AAB=android/app/build/outputs/bundle/release/app-release.aab
+          TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          "$TOOLS/apksigner" verify --min-sdk-version 26 --print-certs "$APK" > "$RUNNER_TEMP/apk-certificate.txt"
+          "$TOOLS/zipalign" -c -P 16 4 "$APK"
+          "$TOOLS/aapt" dump badging "$APK" > "$RUNNER_TEMP/apk-badging.txt"
+          jarsigner -verify "$AAB"
+          keytool -printcert -jarfile "$AAB" > "$RUNNER_TEMP/bundle-certificate.txt"
+          python3 - <<'PY'
+          import os, re, shutil
+          from pathlib import Path
+          temp = Path(os.environ["RUNNER_TEMP"])
+          expected = os.environ.get("CERTIFICATE_SHA256", "").lower().replace(":", "").strip()
+          if not re.fullmatch(r"[0-9a-f]{64}", expected):
+              raise SystemExit("Configure the ANDROID_SIGNING_CERT_SHA256 repository variable")
+          apk = (temp / "apk-certificate.txt").read_text()
+          bundle = (temp / "bundle-certificate.txt").read_text()
+          match = re.search(r"Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]+)", apk)
+          bundle_match = re.search(r"SHA256:\s*([0-9A-Fa-f:]+)", bundle)
+          if not match or match[1].lower() != expected or not bundle_match or bundle_match[1].replace(":", "").lower() != expected:
+              raise SystemExit("APK/AAB signing certificate does not match the pinned release key")
+          badging = (temp / "apk-badging.txt").read_text()
+          version, code = os.environ["VERSION"], os.environ["VERSION_CODE"]
+          if f"versionName='{version}'" not in badging or f"versionCode='{code}'" not in badging:
+              raise SystemExit("APK version does not match the release tag")
+          if "application-debuggable" in badging:
+              raise SystemExit("Refusing to publish a debuggable APK")
+          output = Path("dist")
+          output.mkdir()
+          shutil.copy2("android/app/build/outputs/apk/release/app-release.apk", output / f"anime-levisione-{version}-android.apk")
+          shutil.copy2("android/app/build/outputs/bundle/release/app-release.aab", output / f"anime-levisione-{version}-android.aab")
+          (output / "android-signing-certificate.txt").write_text(expected + "\n")
+          PY
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/anime-levisione-release.jks"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-android
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [metadata, checks, tui, android-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.metadata.outputs.tag }}
+      VERSION: ${{ needs.metadata.outputs.version }}
+      SOURCE_SHA: ${{ needs.metadata.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Verify complete asset set and generate checksums
+        run: python3 tools/release.py checksums "$VERSION"
+      - name: Publish only after all CI checks and assets succeed
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$SOURCE_SHA"
+          if gh release view "$TAG" --json isDraft > "$RUNNER_TEMP/existing-release.json" 2>/dev/null; then
+            python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["isDraft"], "Refusing to modify an already published release"' "$RUNNER_TEMP/existing-release.json"
+          else
+            gh release create "$TAG" --draft --verify-tag --title "anime-levisione $VERSION" \
+              --generate-notes --notes "Signed Android APK (Android 8+) and AAB, plus TUI binaries for Linux x86_64, macOS Apple Silicon/Intel and Windows x86_64. The TUI needs VLC or mpv; Linux needs glibc 2.35+. Verify downloads with SHA256SUMS. Debug APKs may use a different signing key: do not uninstall an existing app if you need to preserve its local data. See the README for installation instructions."
+          fi
+          gh release upload "$TAG" dist/* --clobber
+          gh release view "$TAG" --json assets > "$RUNNER_TEMP/uploaded-assets.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          local = {path.name: path.stat().st_size for path in Path("dist").iterdir()}
+          with open(Path(os.environ["RUNNER_TEMP"]) / "uploaded-assets.json") as source:
+              remote = {asset["name"]: asset["size"] for asset in json.load(source)["assets"]}
+          if local != remote:
+              raise SystemExit("Uploaded release assets differ from the verified local set; leaving release as draft")
+          PY
+          gh release edit "$TAG" --draft=false --latest
