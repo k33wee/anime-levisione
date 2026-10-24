@@ -13,10 +13,10 @@ fmt-check: ## Verify formatting like CI does
 	cargo fmt --all -- --check
 
 lint: ## Clippy with warnings as errors like CI does
-	cargo clippy --all-targets -- -D warnings
+	cargo clippy --all-targets --all-features --locked -- -D warnings
 
 test: ## Run the full test suite
-	cargo test --all-targets
+	cargo test --all-targets --all-features --locked
 
 build: ## Release build like CI does
 	cargo build --release

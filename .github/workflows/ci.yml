@@ -37,6 +37,52 @@ jobs:
         run: make bindings
       - name: Committed bindings are up to date
         run: git diff --exit-code -- android/app/src/main/java/uniffi
+  android:
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level: [26, 35]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+      - name: Install Android SDK and NDK
+        run: |
+          sdkmanager "platforms;android-35" "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - name: Build Rust libraries for all Android ABIs
+        run: ./android/build-rust-android.sh
+      - name: Build APK, app bundle and instrumented tests
+        run: ./android/gradlew -p android :app:assembleDebug :app:bundleDebug :app:assembleDebugAndroidTest :app:lintDebug
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Android startup and native-library smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          arch: x86_64
+          disable-animations: true
+          script: ./android/gradlew -p android :app:connectedDebugAndroidTest
+      - name: Upload debug APK and app bundle
+        if: matrix.api-level == 35
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug
+          path: |
+            android/app/build/outputs/apk/debug/*.apk
+            android/app/build/outputs/bundle/debug/*.aab
   test:
     strategy:
       fail-fast: false
@@ -52,8 +98,8 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
       - name: Tests
-        run: cargo test --all-targets
+        run: cargo test --all-targets --all-features --locked
       - name: Build
         run: cargo build --release
