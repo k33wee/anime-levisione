@@ -37,7 +37,11 @@ support. VLC or mpv plays the video; the terminal stays available for browsing.
 
 Requires **Rust 1.88+** and **VLC or mpv**. Install `ffmpeg` for downloads;
 `ffprobe` is optional for audio-track detection outside HLS. Runs on Linux,
-macOS and Windows/WSL.
+macOS and Windows/WSL. Release archives do not bundle a media player.
+
+On Windows, VLC is detected in its standard Program Files locations, beside
+`anime-levisione.exe`, or through `PATH`. For a custom installation, run e.g.
+`anime-levisione.exe --player "C:/path/to/vlc.exe"`.
 
 ```sh
 git clone https://github.com/k33wee/anime-levisione

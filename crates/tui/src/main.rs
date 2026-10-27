@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
     // `sync` only reads the library and pushes to AniList: it must not need
     // the exclusive lock, so it can run while the TUI is open.
     let one_shot_readonly = matches!(cli.command, Some(Commands::Sync));
-    let store = if cli.demo {
+    let mut store = if cli.demo {
         None
     } else if one_shot_readonly {
         Some(Store::open_readonly(cli.data_dir)?)
@@ -97,6 +97,14 @@ async fn main() -> Result<()> {
         Some(Store::open(cli.data_dir)?)
     };
     let mut config = store.as_ref().map(|s| s.config.clone()).unwrap_or_default();
+    if cli.player.is_none()
+        && !one_shot_readonly
+        && config.refresh_default_player()
+        && let Some(store) = store.as_mut()
+    {
+        store.save_config(&config)?;
+        store.config = config.clone();
+    }
     if cli.private {
         config.private = true;
     }
@@ -906,9 +914,19 @@ async fn doctor(config: &Config, registry: &Registry, store: &Store) -> Result<(
         store.dir.display(),
         config.download_dir.display()
     );
-    for (exe, args) in [
-        (&*config.player, vec!["--version"]),
-        ("ffmpeg", vec!["-version"]),
+    for (label, exe, args, unavailable) in [
+        (
+            "Player",
+            &*config.player,
+            vec!["--version"],
+            "install VLC or mpv, or set player in config.toml",
+        ),
+        (
+            "Downloader",
+            "ffmpeg",
+            vec!["-version"],
+            "optional unless downloading",
+        ),
     ] {
         let result = tokio::time::timeout(
             Duration::from_secs(5),
@@ -919,15 +937,11 @@ async fn doctor(config: &Config, registry: &Registry, store: &Store) -> Result<(
         )
         .await;
         let ok = matches!(result, Ok(Ok(ref o)) if o.status.success());
-        println!(
-            "{} {exe}{}",
-            if ok { "OK" } else { "!!" },
-            if ok {
-                ""
-            } else {
-                " not available (ffmpeg is optional unless downloading)"
-            }
-        );
+        if ok {
+            println!("OK {label}: {exe}");
+        } else {
+            println!("!! {label}: {exe} not available — {unavailable}");
+        }
     }
     let checks = ProviderId::ALL.map(|id| {
         let registry = registry.clone();

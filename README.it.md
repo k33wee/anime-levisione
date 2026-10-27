@@ -38,7 +38,12 @@ il catalogo.
 
 Servono **Rust 1.88+** e **VLC o mpv**. Installa `ffmpeg` per i download;
 `ffprobe` è facoltativo per rilevare le tracce audio nei formati diversi da HLS.
-Funziona su Linux, macOS e Windows/WSL.
+Funziona su Linux, macOS e Windows/WSL. Gli archivi di release non includono
+un player multimediale.
+
+Su Windows, VLC viene cercato nelle cartelle Program Files standard, accanto ad
+`anime-levisione.exe` e nel `PATH`. Per un'installazione personalizzata usa, ad
+esempio, `anime-levisione.exe --player "C:/percorso/di/vlc.exe"`.
 
 ```sh
 git clone https://github.com/k33wee/anime-levisione

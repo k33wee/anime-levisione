@@ -57,41 +57,123 @@ impl Default for Config {
         }
     }
 }
+impl Config {
+    /// Older releases persisted the bare `mpv` fallback even when no player was
+    /// installed. Retry auto-detection so installing VLC later repairs that config.
+    pub fn refresh_default_player(&mut self) -> bool {
+        if !self.player.eq_ignore_ascii_case("mpv")
+            || resolve_executable(Path::new(&self.player)).is_some()
+        {
+            return false;
+        }
+        let Some(player) = detect_player() else {
+            return false;
+        };
+        self.player = player;
+        true
+    }
+}
 /// VLC is the default when it can be found (bundle path first on macOS); mpv is the
-/// fallback. A config.toml that already exists always wins over this detection.
+/// fallback. A valid player already stored in config.toml always wins.
 fn default_player() -> String {
-    #[cfg(target_os = "macos")]
-    const CANDIDATES: &[&str] = &[
+    detect_player().unwrap_or_else(|| "mpv".into())
+}
+fn detect_player() -> Option<String> {
+    first_available(player_candidates())
+}
+#[cfg(target_os = "macos")]
+fn player_candidates() -> Vec<PathBuf> {
+    [
         "/Applications/VLC.app/Contents/MacOS/VLC",
         "/opt/homebrew/bin/vlc",
         "/usr/local/bin/vlc",
         "vlc",
         "/opt/homebrew/bin/mpv",
         "mpv",
-    ];
-    #[cfg(target_os = "windows")]
-    const CANDIDATES: &[&str] = &[r"C:\Program Files\VideoLAN\VLC\vlc.exe", "vlc", "mpv"];
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    const CANDIDATES: &[&str] = &["vlc", "mpv"];
-    first_available(CANDIDATES).unwrap_or_else(|| "mpv".into())
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .collect()
 }
-fn first_available(candidates: &[&str]) -> Option<String> {
-    candidates.iter().find_map(|candidate| {
-        if candidate.contains('/') {
-            Path::new(candidate)
-                .is_file()
-                .then(|| candidate.to_string())
-        } else {
-            find_in_path(candidate)
+#[cfg(target_os = "windows")]
+fn player_candidates() -> Vec<PathBuf> {
+    let mut vlc = Vec::new();
+    let mut mpv = Vec::new();
+    if let Some(directory) = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+    {
+        vlc.push(directory.join("vlc.exe"));
+        mpv.push(directory.join("mpv.exe"));
+    }
+    for variable in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(directory) = std::env::var_os(variable).filter(|value| !value.is_empty()) {
+            let directory = PathBuf::from(directory);
+            vlc.push(directory.join(r"VideoLAN\VLC\vlc.exe"));
+            mpv.push(directory.join(r"mpv\mpv.exe"));
         }
+    }
+    if let Some(directory) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
+        let directory = PathBuf::from(directory).join("Programs");
+        vlc.push(directory.join(r"VideoLAN\VLC\vlc.exe"));
+        mpv.push(directory.join(r"mpv\mpv.exe"));
+    }
+    vlc.extend([PathBuf::from("vlc.exe"), PathBuf::from("vlc")]);
+    mpv.extend([PathBuf::from("mpv.exe"), PathBuf::from("mpv")]);
+    vlc.extend(mpv);
+    vlc
+}
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn player_candidates() -> Vec<PathBuf> {
+    ["vlc", "mpv"].into_iter().map(PathBuf::from).collect()
+}
+fn first_available<I, P>(candidates: I) -> Option<String>
+where
+    I: IntoIterator<Item = P>,
+    P: AsRef<Path>,
+{
+    candidates.into_iter().find_map(|candidate| {
+        resolve_executable(candidate.as_ref())?
+            .into_os_string()
+            .into_string()
+            .ok()
     })
 }
-fn find_in_path(name: &str) -> Option<String> {
+fn resolve_executable(candidate: &Path) -> Option<PathBuf> {
+    if candidate.components().count() == 1 {
+        return find_in_path(candidate);
+    }
+    candidate.is_file().then(|| candidate.to_path_buf())
+}
+fn find_in_path(name: &Path) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
-        .and_then(|candidate| candidate.into_os_string().into_string().ok())
+    find_in_directories(name, std::env::split_paths(&path))
+}
+fn find_in_directories(
+    name: &Path,
+    directories: impl IntoIterator<Item = PathBuf>,
+) -> Option<PathBuf> {
+    let names = executable_names(name);
+    directories.into_iter().find_map(|directory| {
+        names
+            .iter()
+            .map(|name| directory.join(name))
+            .find(|candidate| candidate.is_file())
+    })
+}
+#[cfg(target_os = "windows")]
+fn executable_names(name: &Path) -> Vec<PathBuf> {
+    let mut names = vec![name.to_path_buf()];
+    if name.extension().is_none() {
+        let mut executable = name.as_os_str().to_owned();
+        executable.push(".exe");
+        names.insert(0, PathBuf::from(executable));
+    }
+    names
+}
+#[cfg(not(target_os = "windows"))]
+fn executable_names(name: &Path) -> [PathBuf; 1] {
+    [name.to_path_buf()]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -308,18 +390,28 @@ mod tests {
         std::fs::write(&vlc, "")?;
         let mpv = dir.path().join("mpv");
         std::fs::write(&mpv, "")?;
-        let candidates = [
-            vlc.to_str().expect("path"),
-            "/nonexistent/vlc",
-            mpv.to_str().expect("path"),
-        ];
+        let candidates = [vlc.as_path(), Path::new("/nonexistent/vlc"), mpv.as_path()];
         assert_eq!(
-            first_available(&candidates).as_deref(),
+            first_available(candidates).as_deref(),
             Some(vlc.to_str().expect("path"))
         );
         assert_eq!(
-            first_available(&["/nonexistent/vlc", "/nonexistent/mpv"]),
+            first_available(["/nonexistent/vlc", "/nonexistent/mpv"]),
             None
+        );
+        Ok(())
+    }
+    #[test]
+    fn player_detection_searches_path_directories() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        #[cfg(target_os = "windows")]
+        let executable = dir.path().join("mpv.exe");
+        #[cfg(not(target_os = "windows"))]
+        let executable = dir.path().join("mpv");
+        std::fs::write(&executable, "")?;
+        assert_eq!(
+            find_in_directories(Path::new("mpv"), [dir.path().to_path_buf()]).as_deref(),
+            Some(executable.as_path())
         );
         Ok(())
     }

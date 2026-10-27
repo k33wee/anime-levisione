@@ -77,7 +77,9 @@ def package_tui(version, target, output, root=ROOT):
         (package / "README.txt").write_text(
             f"anime-levisione {version} — {target}\n\n"
             "Extract this directory and put the executable on your PATH.\n"
-            "Install VLC or mpv for playback; ffmpeg is optional for downloads.\n"
+            "VLC and mpv are not bundled: install one for playback.\n"
+            "Use --player /path/to/player for a custom location.\n"
+            "ffmpeg is optional for downloads.\n"
             "The Linux build requires glibc 2.35 or newer.\n\n"
             f"Documentation: {REPOSITORY}/tree/v{version}#tui\n"
             f"Source code: {REPOSITORY}/archive/refs/tags/v{version}.tar.gz\n"

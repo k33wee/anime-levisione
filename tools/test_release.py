@@ -75,12 +75,16 @@ class ReleaseTests(unittest.TestCase):
             self.assertTrue(members[name].mode & stat.S_IXUSR)
             self.assertEqual(bundle.extractfile(members[name]).read(), b"synthetic executable")
 
-    def test_windows_archive_contains_exe_and_license(self):
+    def test_windows_archive_contains_exe_license_and_dependency_notice(self):
         target = release.TARGETS[-1]
         name = self.binary(target)
         archive = release.package_tui("0.2.1", target, self.assets, self.root)
         with zipfile.ZipFile(archive) as bundle:
             self.assertEqual({Path(item).name for item in bundle.namelist()}, {name, "LICENSE", "README.txt"})
+            readme = next(item for item in bundle.namelist() if item.endswith("/README.txt"))
+            instructions = bundle.read(readme).decode()
+            self.assertIn("VLC and mpv are not bundled", instructions)
+            self.assertIn("--player /path/to/player", instructions)
 
     def test_packager_rejects_missing_binary_unknown_target_and_overwrite(self):
         target = release.TARGETS[0]

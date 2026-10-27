@@ -157,7 +157,7 @@ pub async fn play(
     } = request;
     let mut child = command.spawn().with_context(|| {
         format!(
-            "Cannot start '{}'; install mpv or set player in config.toml",
+            "Cannot start '{}'; install VLC or mpv, or set player in config.toml",
             config.player
         )
     })?;
