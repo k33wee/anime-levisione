@@ -34,6 +34,7 @@ const ANIMEWORLD_DOMAINS: &[&str] = &[
 /// Known StreamingCommunity domains, most recent first. This provider rotates
 /// even faster than the anime sites.
 const STREAMINGCOMMUNITY_DOMAINS: &[&str] = &[
+    "https://streamingcommunityz.day",
     "https://streamingcommunityz.build",
     "https://streamingcommunity.to",
     "https://streamingcommunity.net",

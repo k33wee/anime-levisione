@@ -50,7 +50,7 @@ impl Default for Config {
             animeworld_domains: vec![],
             animeunity_url: "https://www.animeunity.to".into(),
             animeunity_domains: vec![],
-            streamingcommunity_url: "https://streamingcommunityz.build".into(),
+            streamingcommunity_url: "https://streamingcommunityz.day".into(),
             streamingcommunity_domains: vec![],
             anilist_client_id: 0,
             private: false,
