@@ -5,7 +5,7 @@
 # anime-levisione
 
 [![CI](https://github.com/k33wee/anime-levisione/actions/workflows/ci.yml/badge.svg)](https://github.com/k33wee/anime-levisione/actions/workflows/ci.yml)
-![Versione](https://img.shields.io/badge/versione-0.2.2-73e2a7)
+![Versione](https://img.shields.io/badge/versione-0.2.3-73e2a7)
 [![GPL-3.0-only](https://img.shields.io/badge/licenza-GPL--3.0--only-73e2a7)](https://www.gnu.org/licenses/gpl-3.0.html)
 
 [English](README.md) · Italiano
