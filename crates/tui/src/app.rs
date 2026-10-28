@@ -1164,19 +1164,21 @@ impl App {
             }
             K::Char('s') => return self.play(true),
             K::Char('n') => {
-                if self.playing {
-                    self.notify(
-                        "Stop the current player with Ctrl+x before playing the next episode",
-                        true,
-                    );
-                    return vec![];
-                }
                 if self.episodes.selected().unwrap_or(0) + 1 >= self.visible_episodes().len() {
                     self.notify("You are at the last available episode", false);
                     return vec![];
                 }
                 self.focus = Focus::Episodes;
                 self.move_selection(1);
+                return self.play(false);
+            }
+            K::Char('N') => {
+                if self.episodes.selected().unwrap_or(0) == 0 {
+                    self.notify("You are at the first available episode", false);
+                    return vec![];
+                }
+                self.focus = Focus::Episodes;
+                self.move_selection(-1);
                 return self.play(false);
             }
             K::Char('f') => {
@@ -1455,9 +1457,12 @@ impl App {
             self.notify("Demo mode: use real providers to play an episode", false);
             return vec![];
         }
-        if self.playing {
-            self.notify("A player is already open · Ctrl+x to stop it first", true);
-            return vec![];
+        // Playing again replaces the current player: the effects layer aborts
+        // the previous task, and the bumped playback_id invalidates its pending
+        // audio prompt and any late messages.
+        self.audio_prompt = None;
+        if self.modal == Some(Modal::Audio) {
+            self.modal = None;
         }
         if let (Some(anime), Some(episode)) =
             (self.selected().cloned(), self.selected_episode().cloned())
@@ -1878,8 +1883,8 @@ mod tests {
         );
     }
     #[test]
-    fn next_episode_is_refused_at_the_end_and_while_playing() {
-        let mut app = App::new(Config::default(), Library::default(), "test".into(), true);
+    fn next_episode_replaces_active_playback_and_is_refused_at_the_end() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), false);
         let anime = sample(ProviderId::AnimeWorld, "7");
         let episodes = (1..=2)
             .map(|n| Episode {
@@ -1893,10 +1898,66 @@ mod tests {
         app.rebuild();
         app.focus = Focus::Episodes;
         app.playing = true;
-        assert!(app.key(K::Char('n').into()).is_empty());
-        app.playing = false;
-        app.episodes.select(Some(1));
+        app.playback_id = 7;
+        // A leftover prompt without its modal (the picker was already answered)
+        // must not survive the replacement play.
+        let (reply, _pending) = tokio::sync::oneshot::channel();
+        app.audio_prompt = Some(AudioPrompt {
+            tracks: vec![],
+            state: ListState::default(),
+            reply,
+        });
+        let actions = app.key(K::Char('n').into());
+        assert!(matches!(
+            actions.as_slice(),
+            [Action::Play {
+                request_id: 8,
+                episode,
+                ..
+            }] if episode.number == "2"
+        ));
+        assert!(app.playing);
+        assert!(app.audio_prompt.is_none());
+        assert!(app.modal.is_none());
+        assert_eq!(app.episodes.selected(), Some(1));
         assert!(app.key(K::Char('n').into()).is_empty(), "last episode");
+        assert!(app.playing, "the last-episode guard keeps playback running");
+    }
+
+    #[test]
+    fn previous_episode_replaces_active_playback_and_is_refused_at_the_start() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), false);
+        let anime = sample(ProviderId::AnimeWorld, "7");
+        let episodes = (1..=2)
+            .map(|n| Episode {
+                id: format!("e{n}"),
+                number: n.to_string(),
+                title: String::new(),
+            })
+            .collect::<Vec<_>>();
+        app.details.insert(anime.key(), (anime.clone(), episodes));
+        app.discovered = vec![anime];
+        app.rebuild();
+        app.focus = Focus::Episodes;
+        app.episodes.select(Some(1));
+        app.playing = true;
+        app.playback_id = 7;
+        let actions = app.key(K::Char('N').into());
+        assert!(matches!(
+            actions.as_slice(),
+            [Action::Play {
+                request_id: 8,
+                episode,
+                ..
+            }] if episode.number == "1"
+        ));
+        assert!(app.playing);
+        assert_eq!(app.episodes.selected(), Some(0));
+        assert!(app.key(K::Char('N').into()).is_empty(), "first episode");
+        assert!(
+            app.playing,
+            "the first-episode guard keeps playback running"
+        );
     }
     #[test]
     fn anilist_tracking_follows_login_and_private_mode() {

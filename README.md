@@ -68,7 +68,7 @@ anime-levisione doctor          # check player, configuration and providers
 | `Tab` / `Shift+Tab`, `0`–`7` | Switch or jump to a pane |
 | `j/k`, arrows | Navigate |
 | `Enter` | Open a title / play the selected episode |
-| `s`, `n` | Restart / next episode |
+| `s`, `n`, `N` | Restart / next / previous episode |
 | `w`, `m`, `d` | Watchlist / mark watched / download |
 | `Ctrl+x`, `Ctrl+d` | Stop playback / cancel download |
 | `?`, `:`, `q` | Shortcuts / command palette / quit |

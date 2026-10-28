@@ -70,7 +70,7 @@ anime-levisione doctor          # controlla player, configurazione e provider
 | `Tab` / `Shift+Tab`, `0`–`7` | Cambia pannello o vai direttamente a uno |
 | `j/k`, frecce | Naviga |
 | `Enter` | Apri un titolo / riproduci l'episodio selezionato |
-| `s`, `n` | Ricomincia / episodio successivo |
+| `s`, `n`, `N` | Ricomincia / episodio successivo / precedente |
 | `w`, `m`, `d` | Watchlist / segna visto / scarica |
 | `Ctrl+x`, `Ctrl+d` | Ferma la riproduzione / annulla il download |
 | `?`, `:`, `q` | Scorciatoie / palette comandi / esci |

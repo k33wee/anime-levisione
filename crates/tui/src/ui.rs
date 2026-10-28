@@ -922,7 +922,7 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
             "ACTIONS",
             "  w            Toggle watchlist",
             "  m            Mark episode watched / unwatched",
-            "  s / n        Restart selected / play next episode",
+            "  s / n / N    Restart selected / next / previous episode",
             "  d            Download via ffmpeg (direct files and HLS)",
             "  Ctrl+x / Ctrl+d   Stop player / cancel download",
             "  f            Filter episodes   Esc clears the filter",
