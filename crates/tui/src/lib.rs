@@ -1,5 +1,5 @@
 //! Terminal UI of anime-levisione: panes, input, playback and the event
-//! loop. Portable logic (providers, AniList, library) comes from
+//! loop. Portable logic (providers, Telegram sync, library) comes from
 //! `anime-levisione-core`.
 
 pub mod app;

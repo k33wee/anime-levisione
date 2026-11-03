@@ -18,9 +18,9 @@ synthetic test clip, not provider imagery. [Sources and regeneration](../docs/sc
 | Pre-play audio picker | Playback waits for an explicit choice when multiple audio tracks exist; change tracks in-player too |
 | Next/restart episode | Player controls, optional autoplay-next, automatic 90% watched threshold |
 | Offline downloads | Native Media3 progressive/HLS downloads, quality/audio preference, pause/resume/cancel/remove, offline-only cached playback |
-| AniList metadata | Optional detail enrichment (synopsis, genres, score, artwork) |
-| AniList login/sync | OAuth browser authorization + pasted token/redirect URL, automatic watchlist/watched sync and manual backfill |
-| Private mode | No automatic search/progress persistence or AniList requests; explicit library edits still work |
+| Provider-native details | Synopsis, genres, score and artwork from the selected provider only |
+| Personal Telegram sync | Dedicated per-user bot, encrypted library, secret connection-key pairing, bidirectional/offline merge |
+| Private mode | No automatic search/progress persistence or Telegram sync; explicit library edits still work |
 | Provider healing/config/doctor | Persistent domain cache, HTTPS mirror settings and connectivity diagnostics |
 
 Desktop executable selection (`mpv`/VLC), subprocess arguments and `ffprobe` are
@@ -90,14 +90,16 @@ runs on attached devices; disconnect personal phones or filter with
 
 ## Account, privacy and storage
 
-- Settings → AniList: create your own [OAuth client], save its numeric client ID,
-  authorize in your browser, then paste the token or redirect URL. No bundled
-  secret/client credentials are required. Tokens are verified before saving.
-- Local edits are saved first; an AniList/network failure never undoes them.
-  Use **Sync library** to retry/backfill. Remote progress is never downgraded.
-- Private viewing disables new automatic history/search writes and AniList
-  requests. It does not erase existing history or explicit My List/watched edits.
-- Library, AniList token, download database, and offline media are app-private.
+- Settings → Personal Telegram sync: create a dedicated bot with @BotFather,
+  send `/start` to it, and paste its token. Other devices use the secret `alib1.…`
+  connection key. No app account, shared bot, or project server is involved.
+  [Setup, recovery, encryption and race limitations](../docs/telegram-sync.md).
+- Local edits are saved first; a network failure never undoes them. Sync runs
+  while the app is open. Use **Sync library** to retry manually. Explicit
+  watched/unwatched changes are synchronized, as are per-episode resume points.
+- Private viewing disables new automatic history/search writes and Telegram
+  sync. It does not erase existing history or explicit My List/watched edits.
+- Library, bot credentials, download database, and offline media are app-private.
   Cloud backup/device transfer are disabled to avoid copying credentials/media.
   Uninstalling the app removes them. Removing a download asks for confirmation and
   never removes progress, installed apps, or personal photos/files.
@@ -121,7 +123,7 @@ monochrome variant for Android 13+ themed icons. See the
 
 ## Layout
 
-- `crates/core/src/api.rs` — blocking mobile API over providers, atomic Store and AniList
+- `crates/core/src/api.rs` — blocking mobile API over providers, atomic Store and personal Telegram sync
 - `crates/core/uniffi.toml` — Android-specific Kotlin generation
 - `app/src/main/java/uniffi/` — committed generated bindings; `make bindings` regenerates them
 - `AppRepository.kt` / `CatalogViewModel.kt` — application-scoped core, cancellation/state/persistence
@@ -131,5 +133,3 @@ monochrome variant for Android 13+ themed icons. See the
 
 Not a Google Play distribution; side-load the APK. Provider access and media
 availability remain subject to upstream services and applicable rights.
-
-[OAuth client]: https://anilist.co/settings/developer

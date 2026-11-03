@@ -764,12 +764,6 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
-
-
-
-
-
-
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -785,17 +779,7 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 // when the library is loaded.
 internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
-    fun uniffi_anime_levisione_core_checksum_method_animelib_anilist_authorize_url(
-): Short
-fun uniffi_anime_levisione_core_checksum_method_animelib_anilist_login(
-): Short
-fun uniffi_anime_levisione_core_checksum_method_animelib_anilist_logout(
-): Short
-fun uniffi_anime_levisione_core_checksum_method_animelib_anilist_sync(
-): Short
-fun uniffi_anime_levisione_core_checksum_method_animelib_anilist_user(
-): Short
-fun uniffi_anime_levisione_core_checksum_method_animelib_continue_watching(
+    fun uniffi_anime_levisione_core_checksum_method_animelib_continue_watching(
 ): Short
 fun uniffi_anime_levisione_core_checksum_method_animelib_details(
 ): Short
@@ -806,8 +790,6 @@ fun uniffi_anime_levisione_core_checksum_method_animelib_episodes(
 fun uniffi_anime_levisione_core_checksum_method_animelib_history(
 ): Short
 fun uniffi_anime_levisione_core_checksum_method_animelib_mark_watched(
-): Short
-fun uniffi_anime_levisione_core_checksum_method_animelib_metadata(
 ): Short
 fun uniffi_anime_levisione_core_checksum_method_animelib_progress(
 ): Short
@@ -825,9 +807,15 @@ fun uniffi_anime_levisione_core_checksum_method_animelib_stream(
 ): Short
 fun uniffi_anime_levisione_core_checksum_method_animelib_stream_url(
 ): Short
-fun uniffi_anime_levisione_core_checksum_method_animelib_sync_watched(
+fun uniffi_anime_levisione_core_checksum_method_animelib_telegram_connect(
 ): Short
-fun uniffi_anime_levisione_core_checksum_method_animelib_sync_watchlist(
+fun uniffi_anime_levisione_core_checksum_method_animelib_telegram_connection_key(
+): Short
+fun uniffi_anime_levisione_core_checksum_method_animelib_telegram_disconnect(
+): Short
+fun uniffi_anime_levisione_core_checksum_method_animelib_telegram_status(
+): Short
+fun uniffi_anime_levisione_core_checksum_method_animelib_telegram_sync(
 ): Short
 fun uniffi_anime_levisione_core_checksum_method_animelib_toggle_watchlist(
 ): Short
@@ -896,16 +884,6 @@ fun uniffi_anime_levisione_core_fn_constructor_animelib_new(uniffi_out_err: Unif
 ): Pointer
 fun uniffi_anime_levisione_core_fn_constructor_animelib_with_library(`dir`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
-fun uniffi_anime_levisione_core_fn_method_animelib_anilist_authorize_url(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_anime_levisione_core_fn_method_animelib_anilist_login(`ptr`: Pointer,`token`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_anime_levisione_core_fn_method_animelib_anilist_logout(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-fun uniffi_anime_levisione_core_fn_method_animelib_anilist_sync(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-fun uniffi_anime_levisione_core_fn_method_animelib_anilist_user(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
 fun uniffi_anime_levisione_core_fn_method_animelib_continue_watching(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_anime_levisione_core_fn_method_animelib_details(`ptr`: Pointer,`anime`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -918,8 +896,6 @@ fun uniffi_anime_levisione_core_fn_method_animelib_history(`ptr`: Pointer,uniffi
 ): RustBuffer.ByValue
 fun uniffi_anime_levisione_core_fn_method_animelib_mark_watched(`ptr`: Pointer,`anime`: RustBuffer.ByValue,`episode`: RustBuffer.ByValue,`watched`: Byte,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
-fun uniffi_anime_levisione_core_fn_method_animelib_metadata(`ptr`: Pointer,`anime`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
 fun uniffi_anime_levisione_core_fn_method_animelib_progress(`ptr`: Pointer,`anime`: RustBuffer.ByValue,`episode`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_anime_levisione_core_fn_method_animelib_recent_searches(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
@@ -936,10 +912,16 @@ fun uniffi_anime_levisione_core_fn_method_animelib_stream(`ptr`: Pointer,`anime`
 ): RustBuffer.ByValue
 fun uniffi_anime_levisione_core_fn_method_animelib_stream_url(`ptr`: Pointer,`anime`: RustBuffer.ByValue,`episode`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_anime_levisione_core_fn_method_animelib_sync_watched(`ptr`: Pointer,`anime`: RustBuffer.ByValue,`episode`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_anime_levisione_core_fn_method_animelib_telegram_connect(`ptr`: Pointer,`credential`: RustBuffer.ByValue,`chatId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_anime_levisione_core_fn_method_animelib_sync_watchlist(`ptr`: Pointer,`anime`: RustBuffer.ByValue,`added`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_anime_levisione_core_fn_method_animelib_telegram_connection_key(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_anime_levisione_core_fn_method_animelib_telegram_disconnect(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_anime_levisione_core_fn_method_animelib_telegram_status(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_anime_levisione_core_fn_method_animelib_telegram_sync(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_anime_levisione_core_fn_method_animelib_toggle_watchlist(`ptr`: Pointer,`anime`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
 fun uniffi_anime_levisione_core_fn_method_animelib_watched_episodes(`ptr`: Pointer,`anime`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1072,21 +1054,6 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
-    if (lib.uniffi_anime_levisione_core_checksum_method_animelib_anilist_authorize_url() != 19154.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_anime_levisione_core_checksum_method_animelib_anilist_login() != 30953.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_anime_levisione_core_checksum_method_animelib_anilist_logout() != 55111.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_anime_levisione_core_checksum_method_animelib_anilist_sync() != 30084.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_anime_levisione_core_checksum_method_animelib_anilist_user() != 45373.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
     if (lib.uniffi_anime_levisione_core_checksum_method_animelib_continue_watching() != 35338.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1103,9 +1070,6 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_anime_levisione_core_checksum_method_animelib_mark_watched() != 20710.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_anime_levisione_core_checksum_method_animelib_metadata() != 54026.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_anime_levisione_core_checksum_method_animelib_progress() != 49331.toShort()) {
@@ -1132,10 +1096,19 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_anime_levisione_core_checksum_method_animelib_stream_url() != 58052.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_anime_levisione_core_checksum_method_animelib_sync_watched() != 13157.toShort()) {
+    if (lib.uniffi_anime_levisione_core_checksum_method_animelib_telegram_connect() != 13971.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_anime_levisione_core_checksum_method_animelib_sync_watchlist() != 150.toShort()) {
+    if (lib.uniffi_anime_levisione_core_checksum_method_animelib_telegram_connection_key() != 17533.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_anime_levisione_core_checksum_method_animelib_telegram_disconnect() != 51229.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_anime_levisione_core_checksum_method_animelib_telegram_status() != 41979.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_anime_levisione_core_checksum_method_animelib_telegram_sync() != 34714.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_anime_levisione_core_checksum_method_animelib_toggle_watchlist() != 20055.toShort()) {
@@ -1523,19 +1496,6 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
 
 public interface AnimeLibInterface {
     
-    fun `anilistAuthorizeUrl`(): kotlin.String
-    
-    /**
-     * Verify a user-supplied token/redirect URL before persisting it in app-private storage.
-     */
-    fun `anilistLogin`(`token`: kotlin.String): kotlin.String
-    
-    fun `anilistLogout`()
-    
-    fun `anilistSync`(): List<kotlin.String>
-    
-    fun `anilistUser`(): kotlin.String
-    
     fun `continueWatching`(): List<ResumePoint>
     
     fun `details`(`anime`: Anime): TitleDetails
@@ -1547,11 +1507,6 @@ public interface AnimeLibInterface {
     fun `history`(): List<Anime>
     
     fun `markWatched`(`anime`: Anime, `episode`: Episode, `watched`: kotlin.Boolean)
-    
-    /**
-     * Metadata is optional and never blocks browsing/playback when AniList is down.
-     */
-    fun `metadata`(`anime`: Anime): Anime
     
     fun `progress`(`anime`: Anime, `episode`: Episode): ResumePoint?
     
@@ -1575,9 +1530,18 @@ public interface AnimeLibInterface {
      */
     fun `streamUrl`(`anime`: Anime, `episode`: Episode): kotlin.String
     
-    fun `syncWatched`(`anime`: Anime, `episode`: Episode): kotlin.String
+    /**
+     * First device: bot token after /start. Other devices: the secret alib1 connection key.
+     */
+    fun `telegramConnect`(`credential`: kotlin.String, `chatId`: kotlin.String): kotlin.String
     
-    fun `syncWatchlist`(`anime`: Anime, `added`: kotlin.Boolean): kotlin.String
+    fun `telegramConnectionKey`(): kotlin.String
+    
+    fun `telegramDisconnect`()
+    
+    fun `telegramStatus`(): kotlin.String
+    
+    fun `telegramSync`()
     
     fun `toggleWatchlist`(`anime`: Anime): kotlin.Boolean
     
@@ -1678,72 +1642,6 @@ open class AnimeLib: Disposable, AutoCloseable, AnimeLibInterface
     }
 
     
-    @Throws(ApiException::class)override fun `anilistAuthorizeUrl`(): kotlin.String {
-            return FfiConverterString.lift(
-    callWithPointer {
-    uniffiRustCallWithError(ApiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_anime_levisione_core_fn_method_animelib_anilist_authorize_url(
-        it, _status)
-}
-    }
-    )
-    }
-    
-
-    
-    /**
-     * Verify a user-supplied token/redirect URL before persisting it in app-private storage.
-     */
-    @Throws(ApiException::class)override fun `anilistLogin`(`token`: kotlin.String): kotlin.String {
-            return FfiConverterString.lift(
-    callWithPointer {
-    uniffiRustCallWithError(ApiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_anime_levisione_core_fn_method_animelib_anilist_login(
-        it, FfiConverterString.lower(`token`),_status)
-}
-    }
-    )
-    }
-    
-
-    
-    @Throws(ApiException::class)override fun `anilistLogout`()
-        = 
-    callWithPointer {
-    uniffiRustCallWithError(ApiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_anime_levisione_core_fn_method_animelib_anilist_logout(
-        it, _status)
-}
-    }
-    
-    
-
-    
-    @Throws(ApiException::class)override fun `anilistSync`(): List<kotlin.String> {
-            return FfiConverterSequenceString.lift(
-    callWithPointer {
-    uniffiRustCallWithError(ApiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_anime_levisione_core_fn_method_animelib_anilist_sync(
-        it, _status)
-}
-    }
-    )
-    }
-    
-
-    override fun `anilistUser`(): kotlin.String {
-            return FfiConverterString.lift(
-    callWithPointer {
-    uniffiRustCall() { _status ->
-    UniffiLib.INSTANCE.uniffi_anime_levisione_core_fn_method_animelib_anilist_user(
-        it, _status)
-}
-    }
-    )
-    }
-    
-
-    
     @Throws(ApiException::class)override fun `continueWatching`(): List<ResumePoint> {
             return FfiConverterSequenceTypeResumePoint.lift(
     callWithPointer {
@@ -1818,22 +1716,6 @@ open class AnimeLib: Disposable, AutoCloseable, AnimeLibInterface
 }
     }
     
-    
-
-    
-    /**
-     * Metadata is optional and never blocks browsing/playback when AniList is down.
-     */
-    @Throws(ApiException::class)override fun `metadata`(`anime`: Anime): Anime {
-            return FfiConverterTypeAnime.lift(
-    callWithPointer {
-    uniffiRustCallWithError(ApiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_anime_levisione_core_fn_method_animelib_metadata(
-        it, FfiConverterTypeAnime.lower(`anime`),_status)
-}
-    }
-    )
-    }
     
 
     
@@ -1945,12 +1827,15 @@ open class AnimeLib: Disposable, AutoCloseable, AnimeLibInterface
     
 
     
-    @Throws(ApiException::class)override fun `syncWatched`(`anime`: Anime, `episode`: Episode): kotlin.String {
+    /**
+     * First device: bot token after /start. Other devices: the secret alib1 connection key.
+     */
+    @Throws(ApiException::class)override fun `telegramConnect`(`credential`: kotlin.String, `chatId`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
     callWithPointer {
     uniffiRustCallWithError(ApiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_anime_levisione_core_fn_method_animelib_sync_watched(
-        it, FfiConverterTypeAnime.lower(`anime`),FfiConverterTypeEpisode.lower(`episode`),_status)
+    UniffiLib.INSTANCE.uniffi_anime_levisione_core_fn_method_animelib_telegram_connect(
+        it, FfiConverterString.lower(`credential`),FfiConverterString.lower(`chatId`),_status)
 }
     }
     )
@@ -1958,16 +1843,53 @@ open class AnimeLib: Disposable, AutoCloseable, AnimeLibInterface
     
 
     
-    @Throws(ApiException::class)override fun `syncWatchlist`(`anime`: Anime, `added`: kotlin.Boolean): kotlin.String {
+    @Throws(ApiException::class)override fun `telegramConnectionKey`(): kotlin.String {
             return FfiConverterString.lift(
     callWithPointer {
     uniffiRustCallWithError(ApiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_anime_levisione_core_fn_method_animelib_sync_watchlist(
-        it, FfiConverterTypeAnime.lower(`anime`),FfiConverterBoolean.lower(`added`),_status)
+    UniffiLib.INSTANCE.uniffi_anime_levisione_core_fn_method_animelib_telegram_connection_key(
+        it, _status)
 }
     }
     )
     }
+    
+
+    
+    @Throws(ApiException::class)override fun `telegramDisconnect`()
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(ApiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_anime_levisione_core_fn_method_animelib_telegram_disconnect(
+        it, _status)
+}
+    }
+    
+    
+
+    
+    @Throws(ApiException::class)override fun `telegramStatus`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(ApiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_anime_levisione_core_fn_method_animelib_telegram_status(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(ApiException::class)override fun `telegramSync`()
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(ApiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_anime_levisione_core_fn_method_animelib_telegram_sync(
+        it, _status)
+}
+    }
+    
     
 
     
@@ -2143,8 +2065,7 @@ data class AppSettings (
     var `privateMode`: kotlin.Boolean, 
     var `animeworldUrl`: kotlin.String, 
     var `animeunityUrl`: kotlin.String, 
-    var `streamingcommunityUrl`: kotlin.String, 
-    var `anilistClientId`: kotlin.UInt
+    var `streamingcommunityUrl`: kotlin.String
 ) {
     
     companion object
@@ -2160,7 +2081,6 @@ public object FfiConverterTypeAppSettings: FfiConverterRustBuffer<AppSettings> {
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
-            FfiConverterUInt.read(buf),
         )
     }
 
@@ -2168,8 +2088,7 @@ public object FfiConverterTypeAppSettings: FfiConverterRustBuffer<AppSettings> {
             FfiConverterBoolean.allocationSize(value.`privateMode`) +
             FfiConverterString.allocationSize(value.`animeworldUrl`) +
             FfiConverterString.allocationSize(value.`animeunityUrl`) +
-            FfiConverterString.allocationSize(value.`streamingcommunityUrl`) +
-            FfiConverterUInt.allocationSize(value.`anilistClientId`)
+            FfiConverterString.allocationSize(value.`streamingcommunityUrl`)
     )
 
     override fun write(value: AppSettings, buf: ByteBuffer) {
@@ -2177,7 +2096,6 @@ public object FfiConverterTypeAppSettings: FfiConverterRustBuffer<AppSettings> {
             FfiConverterString.write(value.`animeworldUrl`, buf)
             FfiConverterString.write(value.`animeunityUrl`, buf)
             FfiConverterString.write(value.`streamingcommunityUrl`, buf)
-            FfiConverterUInt.write(value.`anilistClientId`, buf)
     }
 }
 

@@ -96,6 +96,7 @@ class CatalogViewModel(application: Application) : AndroidViewModel(application)
     var user by mutableStateOf("")
         private set
 
+    var connectionKey by mutableStateOf<String?>(null)
     var message by mutableStateOf<String?>(null)
     var accountBusy by mutableStateOf(false)
         private set
@@ -122,17 +123,30 @@ class CatalogViewModel(application: Application) : AndroidViewModel(application)
     private var detailGeneration = 0
     private var libraryGeneration = 0
     private val progressWrites = Mutex()
+    private var syncForeground = false
+
+    fun setSyncForeground(active: Boolean) {
+        syncForeground = active
+        if (active) sync(automatic = true)
+    }
 
     init {
         offline.wifiOnly(wifiOnly)
         viewModelScope.launch {
             attempt {
                 settings = repository.call { it.settings() }
-                user = repository.call { it.anilistUser() }
+                user = repository.call { it.telegramStatus() }
                 refreshLibrary()
+                sync(automatic = true)
             }
         }
         loadCatalogue()
+        viewModelScope.launch {
+            while (true) {
+                delay(60_000)
+                sync(automatic = true)
+            }
+        }
         viewModelScope.launch {
             while (true) {
                 delay(2000)
@@ -227,19 +241,6 @@ class CatalogViewModel(application: Application) : AndroidViewModel(application)
                     val loaded = repository.call { it.details(anime) }
                     if (generation != detailGeneration) return@launch
                     detail = DetailState(loaded.anime, loaded.episodes, watched, false)
-                    if (settings?.privateMode != true) {
-                        // AniList failures must not remove otherwise playable provider results.
-                        val enriched =
-                            try {
-                                repository.call { it.metadata(loaded.anime) }
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (_: Exception) {
-                                null
-                            }
-                        if (generation == detailGeneration && enriched != null)
-                            detail = detail?.copy(anime = enriched)
-                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -262,8 +263,7 @@ class CatalogViewModel(application: Application) : AndroidViewModel(application)
                 val added = repository.call { it.toggleWatchlist(anime) }
                 refreshLibrary()
                 message = if (added) "Added to My List" else "Removed from My List"
-                if (user.isNotEmpty() && settings?.privateMode == false)
-                    repository.call { it.syncWatchlist(anime, added) }
+                sync(automatic = true)
             }
         }
 
@@ -277,8 +277,7 @@ class CatalogViewModel(application: Application) : AndroidViewModel(application)
                         detail?.copy(
                             watched = repository.call { it.watchedEpisodes(anime).toSet() }
                         )
-                if (watched && user.isNotEmpty() && settings?.privateMode == false)
-                    repository.call { it.syncWatched(anime, episode) }
+                sync(automatic = true)
             }
         }
 
@@ -356,7 +355,7 @@ class CatalogViewModel(application: Application) : AndroidViewModel(application)
         seconds: Double,
         duration: Double,
         completed: Boolean,
-        sync: Boolean,
+        syncNow: Boolean,
     ) {
         // Also retain the live position for Activity recreation, including private sessions.
         if (this.playback?.session == playback.session)
@@ -376,8 +375,7 @@ class CatalogViewModel(application: Application) : AndroidViewModel(application)
                     }
                 }
                 refreshLibrary()
-                if (sync && user.isNotEmpty() && settings?.privateMode == false)
-                    repository.call { it.syncWatched(playback.anime, playback.episode) }
+                if (syncNow) sync(automatic = true)
             }
         }
     }
@@ -423,42 +421,57 @@ class CatalogViewModel(application: Application) : AndroidViewModel(application)
             }
         }
 
-    fun login(token: String) =
+    fun login(credential: String, chatId: String) =
         viewModelScope.launch {
+            if (accountBusy) return@launch
             accountBusy = true
             try {
                 attempt {
-                    user = repository.call { it.anilistLogin(token) }
-                    message = "Connected to AniList as $user"
+                    connectionKey = repository.call { it.telegramConnect(credential, chatId) }
+                    user = repository.call { it.telegramStatus() }
+                    message = "Connected to your personal Telegram bot. Save the secret connection key."
                 }
             } finally {
                 accountBusy = false
             }
+            sync(automatic = true)
         }
+
+    fun showConnectionKey() = viewModelScope.launch {
+        attempt { connectionKey = repository.call { it.telegramConnectionKey() } }
+    }
 
     fun logout() =
         viewModelScope.launch {
-            attempt {
-                repository.call { it.anilistLogout() }
-                user = ""
-                message = "Disconnected from AniList"
-            }
-        }
-
-    fun sync() =
-        viewModelScope.launch {
+            if (accountBusy) return@launch
             accountBusy = true
             try {
                 attempt {
-                    val report = repository.call { it.anilistSync() }
-                    message = report.joinToString("\n").ifBlank { "Nothing to sync yet" }
+                    repository.call { it.telegramDisconnect() }
+                    user = ""
+                    connectionKey = null
+                    message = "Disconnected. Local and Telegram libraries are unchanged."
                 }
-            } finally {
-                accountBusy = false
-            }
+            } finally { accountBusy = false }
         }
 
-    suspend fun authorizeUrl() = repository.call { it.anilistAuthorizeUrl() }
+    fun sync(automatic: Boolean = false) =
+        viewModelScope.launch {
+            if (accountBusy || user.isBlank() || settings?.privateMode != false || (automatic && !syncForeground)) return@launch
+            accountBusy = true
+            try {
+                attempt {
+                    repository.call { it.telegramSync() }
+                    refreshLibrary()
+                    val current = detail
+                    if (current != null) {
+                        val watched = repository.call { it.watchedEpisodes(current.anime).toSet() }
+                        if (detail?.anime?.key() == current.anime.key()) detail = detail?.copy(watched = watched)
+                    }
+                    if (!automatic) message = "Library synchronized with your Telegram bot"
+                }
+            } finally { accountBusy = false }
+        }
 
     fun download(anime: Anime, episode: Episode, language: String, height: Int) =
         viewModelScope.launch {

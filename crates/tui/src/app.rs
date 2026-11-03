@@ -1,10 +1,10 @@
 use crate::{events::Message, input::Input, playback::OfflineEpisode};
 use anime_levisione_core::{
-    anilist::{MediaEntry, TrackEvent},
     audio::AudioTrack,
     model::{Anime, Episode, ProviderId, normalize, sort_by_rank},
     provider::Media,
     store::{Config, Library, Progress},
+    sync::Account,
 };
 use crossterm::event::{
     KeyCode as K, KeyEvent, KeyModifiers as M, MouseButton, MouseEvent, MouseEventKind,
@@ -116,6 +116,7 @@ pub enum Modal {
     Quit,
     Audio,
     Login,
+    ConnectionKey,
 }
 
 pub struct AudioPrompt {
@@ -149,20 +150,14 @@ pub enum Action {
         anime: Anime,
         episode: Episode,
     },
-    /// Fetch AniList metadata to enrich a title's details.
-    Lookup(Anime),
-    /// Mirror a local watchlist/progress change to the user's AniList list.
-    Track {
-        anime: Anime,
-        event: TrackEvent,
+    Connect {
+        credential: String,
+        chat_id: String,
     },
-    /// Verify and store an AniList token entered in the TUI login form.
-    AniListLogin {
-        client_id: u32,
-        token: String,
-    },
-    /// Open the AniList authorization page for a client id from the form.
-    OpenAniListAuth(u32),
+    AdoptAccount(Account),
+    Sync,
+    Disconnect,
+    ShowConnectionKey,
     Save,
     /// Library save for high-frequency player progress updates; debounced by the
     /// effects layer instead of fsync-ing on every ~2 s report.
@@ -187,7 +182,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("Toggle private mode", "P"),
     ("Settings & paths", ","),
     ("Provider diagnostics", "!"),
-    ("AniList login & sync status", "!"),
+    ("Connect personal Telegram bot", ""),
+    ("Sync library now", ""),
+    ("Show secret connection key", ""),
+    ("Disconnect Telegram sync", ""),
     ("Keyboard help & about", "?"),
     ("Stop playback", "Ctrl+x"),
     ("Cancel download", "Ctrl+d"),
@@ -227,8 +225,8 @@ pub struct App {
     pub playback_id: u64,
     pub command_input: Input,
     pub command_selected: usize,
-    /// AniList login form: client id + pasted token (Tab switches field).
-    pub login_client_id: Input,
+    /// Optional private chat ID and bot token/connection-key form.
+    pub login_chat_id: Input,
     pub login_token: Input,
     pub login_field: u8,
     pub login_busy: bool,
@@ -241,22 +239,15 @@ pub struct App {
     pub tick: usize,
     pub search_pending: Option<Instant>,
     detail_pending: Option<Instant>,
-    /// AniList metadata per title key; `None` caches a lookup miss so the
-    /// same title is not searched again while scrolling.
-    pub meta: HashMap<String, Option<MediaEntry>>,
-    pub meta_pending: Option<Instant>,
-    /// AniList account name once logged in; drives sync and UI hints.
-    pub anilist_user: Option<String>,
-    pub anilist_error: Option<String>,
+    pub sync_identity: Option<String>,
+    pub sync_label: String,
+    pub sync_error: Option<String>,
+    pub connection_key: String,
+    next_sync: Instant,
     catalog_view: View,
 }
 impl App {
     pub fn new(config: Config, library: Library, data_path: String, demo: bool) -> Self {
-        let client_id = if config.anilist_client_id > 0 {
-            config.anilist_client_id.to_string()
-        } else {
-            String::new()
-        };
         Self {
             config,
             library,
@@ -288,7 +279,7 @@ impl App {
             playback_id: 0,
             command_input: Input::default(),
             command_selected: 0,
-            login_client_id: Input::new(client_id),
+            login_chat_id: Input::default(),
             login_token: Input::with_capacity(2000),
             login_field: 1,
             login_busy: false,
@@ -301,10 +292,11 @@ impl App {
             tick: 0,
             search_pending: None,
             detail_pending: None,
-            meta: HashMap::new(),
-            meta_pending: None,
-            anilist_user: None,
-            anilist_error: None,
+            sync_identity: None,
+            sync_label: String::new(),
+            sync_error: None,
+            connection_key: String::new(),
+            next_sync: Instant::now(),
             catalog_view: View::Discover,
         }
     }
@@ -418,7 +410,6 @@ impl App {
             || self.statuses.iter().any(|s| s.pending)
             || self.search_pending.is_some()
             || self.detail_pending.is_some()
-            || self.meta_pending.is_some()
     }
     pub fn visible(&self) -> Vec<&Anime> {
         self.catalog
@@ -575,27 +566,10 @@ impl App {
         self.detail_pending = self
             .detail_loading
             .then(|| Instant::now() + Duration::from_millis(180));
-        // AniList enrichment trails the selection with its own debounce.
-        self.meta_pending = None;
-        if self.anilist_enabled()
-            && self
-                .selected()
-                .is_some_and(|a| !a.title.trim().is_empty() && !self.meta.contains_key(&a.key()))
-        {
-            self.meta_pending = Some(Instant::now() + Duration::from_millis(450));
-        }
         self.select_resume();
     }
-    /// AniList is consulted only when it cannot leak anything: never in demo
-    /// or private mode.
-    fn anilist_enabled(&self) -> bool {
-        !self.demo && !self.config.private
-    }
-    fn anilist_track(&self, anime: &Anime, event: TrackEvent) -> Option<Action> {
-        (self.anilist_enabled() && self.anilist_user.is_some()).then(|| Action::Track {
-            anime: anime.clone(),
-            event,
-        })
+    pub fn sync_enabled(&self) -> bool {
+        !self.demo && !self.config.private && self.sync_identity.is_some()
     }
     fn select_resume(&mut self) {
         let Some(anime) = self.selected() else {
@@ -651,14 +625,9 @@ impl App {
                 }
             }
         }
-        if self.meta_pending.is_some_and(|t| Instant::now() >= t) {
-            self.meta_pending = None;
-            if self.anilist_enabled()
-                && let Some(anime) = self.selected().cloned()
-                && !self.meta.contains_key(&anime.key())
-            {
-                actions.push(Action::Lookup(anime));
-            }
+        if self.sync_enabled() && Instant::now() >= self.next_sync {
+            self.next_sync = Instant::now() + Duration::from_secs(60);
+            actions.push(Action::Sync);
         }
         actions
     }
@@ -687,41 +656,39 @@ impl App {
                 }
                 self.notify(format!("{provider} moved to {url}; retrying"), false);
             }
-            Message::Meta { key, result } => {
+            Message::Synced(result) => {
+                if !self.sync_enabled() {
+                    return vec![];
+                }
                 match result {
-                    Ok(entry) => {
-                        self.anilist_error = None;
-                        self.meta.insert(key, entry);
+                    Ok(outcome) if self.sync_identity.as_deref() == Some(&outcome.identity) => {
+                        let mut next = self.library.clone();
+                        match outcome.apply(&mut next) {
+                            Ok(()) => {
+                                self.library = next;
+                                self.sync_error = None;
+                                self.rebuild();
+                                return vec![Action::Save];
+                            }
+                            Err(error) => self.sync_error = Some(format!("{error:#}")),
+                        }
                     }
-                    // Errors are cached too, so a failing API is not retried
-                    // on every selection; diagnostics shows the reason.
+                    Ok(_) => (), // A result from a disconnected/replaced account.
                     Err(error) => {
-                        self.anilist_error = Some(error);
-                        self.meta.insert(key, None);
+                        self.sync_error = Some(error.clone());
+                        self.notify(format!("Sync: {error}"), true);
                     }
                 }
             }
-            Message::Tracked(result) => match result {
-                Ok(text) => self.notify(text, false),
-                Err(error) => self.notify(error, true),
-            },
             Message::Login(result) => {
                 self.login_busy = false;
+                self.login_token = Input::with_capacity(4096);
                 match result {
-                    Ok(user) => {
-                        self.anilist_user = Some(user.clone());
-                        self.anilist_error = None;
-                        if let Ok(id) = self.login_client_id.value.trim().parse::<u32>() {
-                            self.config.anilist_client_id = id;
-                        }
-                        self.modal = None;
-                        self.notify(format!("AniList: logged in as {user}"), false);
+                    Ok(account) if !self.config.private && !self.demo => {
+                        return vec![Action::AdoptAccount(account)];
                     }
-                    Err(error) => {
-                        self.notify(format!("AniList login failed: {error}"), true);
-                        // Keep the form open so the token can be re-pasted.
-                        self.login_token = Input::with_capacity(2000);
-                    }
+                    Ok(_) => self.notify("Sync is disabled in private/demo mode", true),
+                    Err(error) => self.notify(format!("Telegram connection failed: {error}"), true),
                 }
             }
             Message::Catalog {
@@ -855,27 +822,13 @@ impl App {
             }
             Message::Progress { anime, progress } => {
                 if !self.config.private {
-                    let was_completed = self
+                    let mut progress = progress;
+                    progress.completed |= self
                         .library
                         .progress(&anime, &progress.episode)
                         .is_some_and(|p| p.completed);
-                    let key = anime.key();
-                    let total = self
-                        .details
-                        .get(&key)
-                        .map(|(a, _)| a.episodes)
-                        .unwrap_or(anime.episodes);
-                    let completed_now = progress.completed && !was_completed;
-                    let number = progress.episode.number.clone();
-                    self.library.record(anime.clone(), progress);
-                    let mut actions = vec![Action::SaveProgress];
-                    if completed_now
-                        && let Some(track) =
-                            self.anilist_track(&anime, TrackEvent::Watched { number, total })
-                    {
-                        actions.push(track);
-                    }
-                    return actions;
+                    self.library.record(anime, progress);
+                    return vec![Action::SaveProgress];
                 }
             }
             Message::PlaybackEnded { request_id, result } => {
@@ -924,7 +877,7 @@ impl App {
                 return;
             }
             let input = if self.login_field == 0 {
-                &mut self.login_client_id
+                &mut self.login_chat_id
             } else {
                 &mut self.login_token
             };
@@ -994,33 +947,19 @@ impl App {
                 }
                 K::Enter => {
                     if self.login_token.value.trim().is_empty() {
-                        self.notify("Paste your AniList token first", true);
-                        return vec![];
-                    }
-                    let client_id = self.login_client_id.value.trim().parse().unwrap_or(0);
-                    if client_id == 0 {
-                        self.notify(
-                            "Enter your AniList client id (anilist.co/settings/developer)",
-                            true,
-                        );
-                        self.login_field = 0;
+                        self.notify("Paste your bot token or connection key first", true);
                         return vec![];
                     }
                     self.login_busy = true;
-                    return vec![Action::AniListLogin {
-                        client_id,
-                        token: self.login_token.value.clone(),
+                    return vec![Action::Connect {
+                        chat_id: self.login_chat_id.value.clone(),
+                        credential: self.login_token.value.clone(),
                     }];
-                }
-                K::Char('o') if self.login_field != 0 => {
-                    if let Ok(id) = self.login_client_id.value.trim().parse::<u32>() {
-                        return vec![Action::OpenAniListAuth(id)];
-                    }
                 }
                 _ => {}
             }
             let input = if self.login_field == 0 {
-                &mut self.login_client_id
+                &mut self.login_chat_id
             } else {
                 &mut self.login_token
             };
@@ -1187,16 +1126,11 @@ impl App {
             K::Char('w') => {
                 if let Some(a) = self.selected().cloned() {
                     self.library.toggle_bookmark(a.clone());
-                    let added = self.library.bookmarked(&a);
                     self.notify("Watchlist updated", false);
                     if self.view == View::Watchlist {
                         self.rebuild();
                     }
-                    let mut actions = vec![Action::Save];
-                    if let Some(track) = self.anilist_track(&a, TrackEvent::Watchlist { added }) {
-                        actions.push(track);
-                    }
-                    return actions;
+                    return vec![Action::Save, Action::Sync];
                 }
             }
             K::Char('m') => {
@@ -1224,27 +1158,7 @@ impl App {
                         },
                         false,
                     );
-                    let mut actions = vec![Action::Save];
-                    if completed {
-                        let total = self
-                            .details
-                            .get(&anime.key())
-                            .map(|(a, _)| a.episodes)
-                            .unwrap_or(anime.episodes);
-                        if let Some(track) = self.anilist_track(
-                            &anime,
-                            TrackEvent::Watched {
-                                number: self
-                                    .selected_episode()
-                                    .map(|e| e.number.clone())
-                                    .unwrap_or_default(),
-                                total,
-                            },
-                        ) {
-                            actions.push(track);
-                        }
-                    }
-                    return actions;
+                    return vec![Action::Save, Action::Sync];
                 }
             }
             K::Char('d') => {
@@ -1284,8 +1198,7 @@ impl App {
             K::Char('P') => {
                 self.config.private = !self.config.private;
                 if self.config.private {
-                    // Nothing leaves the machine in private mode.
-                    self.meta_pending = None;
+                    self.sync_error = None;
                 }
                 self.notify(
                     if self.config.private {
@@ -1301,6 +1214,8 @@ impl App {
         vec![]
     }
     fn close_modal(&mut self) {
+        self.connection_key.clear();
+        self.login_token = Input::with_capacity(4096);
         self.modal = self.audio_prompt.as_ref().map(|_| Modal::Audio);
     }
     fn move_audio(&mut self, delta: i32) {
@@ -1365,28 +1280,21 @@ impl App {
             10 => K::Char('P'),
             11 => K::Char(','),
             12 => K::Char('!'),
-            13 => K::Char('?'),
-            14 => return self.key(KeyEvent::new(K::Char('x'), M::CONTROL)),
-            15 => return self.key(KeyEvent::new(K::Char('d'), M::CONTROL)),
-            16 => {
-                if self.anilist_user.is_some() {
-                    self.notify(
-                        format!(
-                            "AniList: syncing as {} · log out with `anime-levisione logout`",
-                            self.anilist_user.clone().unwrap_or_default()
-                        ),
-                        false,
-                    );
+            13 => {
+                if self.demo || self.config.private || self.sync_identity.is_some() {
+                    self.notify("Disable demo/private mode and disconnect the current bot before connecting", true);
                     return vec![];
                 }
-                self.login_field = if self.login_client_id.value.trim().parse::<u32>().is_ok() {
-                    1
-                } else {
-                    0
-                };
+                self.login_field = 1;
                 self.modal = Some(Modal::Login);
                 return vec![];
             }
+            14 => return vec![Action::Sync],
+            15 => return vec![Action::ShowConnectionKey],
+            16 => return vec![Action::Disconnect],
+            17 => K::Char('?'),
+            18 => return self.key(KeyEvent::new(K::Char('x'), M::CONTROL)),
+            19 => return self.key(KeyEvent::new(K::Char('d'), M::CONTROL)),
             _ => K::Char('q'),
         };
         self.key(key.into())
@@ -1705,53 +1613,25 @@ mod tests {
         assert!(app.catalog.is_empty());
     }
     #[test]
-    fn anilist_login_form_opens_submits_and_reports_outcomes() {
-        let mut app = App::new(Config::default(), Library::default(), "test".into(), true);
-        // Command palette entry opens the form when logged out, keeps the
-        // status notification when already syncing.
-        app.anilist_user = None;
-        assert!(app.execute_command(16).is_empty());
+    fn telegram_form_submits_secrets_and_clears_them_on_close_or_error() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), false);
+        app.execute_command(13);
         assert_eq!(app.modal, Some(Modal::Login));
-        app.anilist_user = Some("viewer".into());
-        app.key(K::Esc.into()); // close the form first
-        assert!(app.execute_command(16).is_empty());
-        assert_eq!(app.modal, None, "status peek must not reopen the form");
-        app.anilist_user = None;
-        app.execute_command(16);
-        // A whole redirect URL pasted into the token field survives intact.
-        app.key(K::Tab.into()); // move from the client id to the token field
-        let url =
-            "https://anilist.co/api/v2/oauth/paste#access_token=tok.veryLong&token_type=Bearer";
-        app.paste(url);
-        assert_eq!(app.login_token.value, url);
-        // Submit without a client id complains and focuses that field.
-        app.key(K::Enter.into());
-        assert!(app.login_field == 0 && !app.login_busy);
-        app.login_client_id.insert("54777");
-        // Enter on the client id moves to the token; Enter there submits.
-        app.key(K::Enter.into());
-        assert_eq!(app.login_field, 1);
+        app.paste("alib1.private-key");
         let actions = app.key(K::Enter.into());
-        match actions.first() {
-            Some(Action::AniListLogin { client_id, token }) => {
-                assert_eq!(*client_id, 54777);
-                assert_eq!(token.as_str(), url);
-            }
-            other => panic!("expected a login action, got {}", other.is_some()),
-        }
+        assert!(
+            matches!(actions.first(), Some(Action::Connect { credential, chat_id }) if credential == "alib1.private-key" && chat_id.is_empty())
+        );
         assert!(app.login_busy);
-        // Failure keeps the form open and clears the bad token.
         app.message(Message::Login(Err("rejected".into())));
-        assert_eq!(app.modal, Some(Modal::Login));
-        assert!(app.login_token.value.is_empty());
         assert!(!app.login_busy);
-        // Success closes it, records the account, remembers the client id.
-        app.login_token.insert("tok");
-        app.key(K::Enter.into());
-        app.message(Message::Login(Ok("k33wee".into())));
+        assert!(app.login_token.value.is_empty());
+        app.connection_key = "private".into();
+        app.key(K::Esc.into());
+        assert!(app.connection_key.is_empty());
+        app.config.private = true;
+        app.execute_command(13);
         assert_eq!(app.modal, None);
-        assert_eq!(app.anilist_user.as_deref(), Some("k33wee"));
-        assert_eq!(app.config.anilist_client_id, 54777);
     }
     #[test]
     fn typing_shortcuts_in_search_does_not_quit_or_change_tabs() {
@@ -1960,62 +1840,23 @@ mod tests {
         );
     }
     #[test]
-    fn anilist_tracking_follows_login_and_private_mode() {
+    fn periodic_sync_requires_connection_and_respects_private_and_demo() {
         let mut app = App::new(Config::default(), Library::default(), "test".into(), false);
-        app.discovered = vec![sample(ProviderId::AnimeUnity, "7")];
-        app.rebuild();
-        app.titles.select(Some(0));
-        // Logged out: purely local watchlist toggle.
-        let actions = app.key(K::Char('w').into());
-        assert!(!actions.iter().any(|a| matches!(a, Action::Track { .. })));
-        app.anilist_user = Some("viewer".into());
-        let actions = app.key(K::Char('w').into());
-        assert!(
-            actions.iter().any(|a| matches!(a, Action::Track { .. })),
-            "logged-in watchlist toggles mirror to AniList"
-        );
-        // Private mode is a hard off switch for anything leaving the machine.
+        assert!(!app.sync_enabled());
+        app.sync_identity = Some("account".into());
+        assert!(app.on_tick().iter().any(|a| matches!(a, Action::Sync)));
+        assert!(!app.on_tick().iter().any(|a| matches!(a, Action::Sync)));
         app.config.private = true;
-        let actions = app.key(K::Char('w').into());
-        assert!(!actions.iter().any(|a| matches!(a, Action::Track { .. })));
+        assert!(!app.sync_enabled());
+        app.config.private = false;
+        app.demo = true;
+        assert!(!app.sync_enabled());
     }
     #[test]
-    fn anilist_lookup_debounces_and_caches_misses() {
+    fn playback_progress_is_saved_without_repeated_network_uploads() {
         let mut app = App::new(Config::default(), Library::default(), "test".into(), false);
         let anime = sample(ProviderId::AnimeUnity, "7");
-        app.details.insert(anime.key(), (anime.clone(), vec![]));
-        app.discovered = vec![anime.clone()];
-        app.rebuild();
-        app.titles.select(Some(0));
-        app.selection_changed();
-        assert!(app.meta_pending.is_some(), "a selection schedules a lookup");
-        assert!(app.on_tick().is_empty(), "before the debounce elapses");
-        app.meta_pending = Some(Instant::now() - Duration::from_secs(1));
-        let actions = app.on_tick();
-        assert!(
-            actions.iter().any(|a| matches!(a, Action::Lookup(_))),
-            "due debounce issues the lookup"
-        );
-        // A cached miss must not re-query while scrolling back to the title.
-        app.message(Message::Meta {
-            key: anime.key(),
-            result: Ok(None),
-        });
-        app.selection_changed();
-        app.meta_pending = Some(Instant::now() - Duration::from_secs(1));
-        assert!(app.on_tick().is_empty(), "cached miss skips the request");
-        // Errors surface for diagnostics without failing the panel.
-        app.message(Message::Meta {
-            key: "AU:other".into(),
-            result: Err("rate limited".into()),
-        });
-        assert_eq!(app.anilist_error.as_deref(), Some("rate limited"));
-    }
-    #[test]
-    fn completed_playback_mirrors_to_anilist_once() {
-        let mut app = App::new(Config::default(), Library::default(), "test".into(), false);
-        let anime = sample(ProviderId::AnimeUnity, "7");
-        app.anilist_user = Some("viewer".into());
+        app.sync_identity = Some("account".into());
         app.details.insert(anime.key(), (anime.clone(), vec![]));
         let episode = Episode {
             id: "e1".into(),
@@ -2032,23 +1873,14 @@ mod tests {
             anime: anime.clone(),
             progress: progress(true),
         });
-        assert!(
-            actions.iter().any(|a| matches!(
-                a,
-                Action::Track {
-                    event: TrackEvent::Watched { .. },
-                    ..
-                }
-            )),
-            "first completion syncs to AniList"
-        );
+        assert!(actions.iter().any(|a| matches!(a, Action::SaveProgress)));
         let actions = app.message(Message::Progress {
             anime,
             progress: progress(true),
         });
         assert!(
-            !actions.iter().any(|a| matches!(a, Action::Track { .. })),
-            "repeat reports do not re-sync"
+            !actions.iter().any(|a| matches!(a, Action::Sync)),
+            "progress uploads are debounced by the effects layer"
         );
     }
 }

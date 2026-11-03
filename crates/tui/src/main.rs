@@ -1,5 +1,8 @@
 use anime_levisione::{app, demo, events, input, playback, ui};
-use anime_levisione_core::{anilist, model, provider, store};
+use anime_levisione_core::{
+    model, provider, store,
+    sync::{self, Account},
+};
 use anyhow::{Context, Result, bail};
 use app::{Action, App};
 use clap::{Parser, Subcommand};
@@ -65,19 +68,17 @@ enum Commands {
     },
     /// Check player, downloader, configuration and live provider connectivity
     Doctor,
-    /// Connect AniList: open the authorization page and store your token
+    /// Connect a personal Telegram bot or another device's secret connection key (stdin)
     Login {
-        /// AniList OAuth client id (else anilist_client_id from config.toml)
+        /// Optional private Telegram chat ID; otherwise detected after a recent /start
         #[arg(long)]
-        client_id: Option<u32>,
-        /// Non-interactive: the access token (or the whole redirect URL)
-        #[arg(long)]
-        token: Option<String>,
+        chat_id: Option<String>,
     },
-    /// Catch up AniList with the saved watchlist and watched progress
-    /// (activity recorded before login; remote entries are never downgraded)
+    /// Merge the remote Telegram library with local lists and progress
     Sync,
-    /// Remove the stored AniList token (metadata stays anonymous)
+    /// Print the secret connection key for another device (do not share publicly)
+    Account,
+    /// Disconnect locally, keeping local and Telegram libraries
     Logout,
 }
 #[tokio::main]
@@ -86,19 +87,13 @@ async fn main() -> Result<()> {
     if cli.demo && cli.command.is_some() {
         bail!("--demo is a TUI preview; do not combine it with subcommands");
     }
-    // `sync` only reads the library and pushes to AniList: it must not need
-    // the exclusive lock, so it can run while the TUI is open.
-    let one_shot_readonly = matches!(cli.command, Some(Commands::Sync));
     let mut store = if cli.demo {
         None
-    } else if one_shot_readonly {
-        Some(Store::open_readonly(cli.data_dir)?)
     } else {
         Some(Store::open(cli.data_dir)?)
     };
     let mut config = store.as_ref().map(|s| s.config.clone()).unwrap_or_default();
     if cli.player.is_none()
-        && !one_shot_readonly
         && config.refresh_default_player()
         && let Some(store) = store.as_mut()
     {
@@ -111,27 +106,30 @@ async fn main() -> Result<()> {
     if let Some(player) = cli.player {
         config.player = player;
     }
-    let registry = if cli.demo {
-        None
-    } else {
-        Some(Registry::new(
-            &config,
-            store.as_ref().map(|s| s.dir.as_path()),
-        )?)
-    };
-    let anilist = if cli.demo {
-        None
-    } else {
-        store
-            .as_ref()
-            .map(|s| anilist::Client::open(&s.dir).map(Arc::new))
-            .transpose()?
-    };
     if let Some(command) = cli.command {
-        if let Commands::Sync = command {
-            return sync(store.as_ref().context("No config directory")?).await;
+        if !matches!(command, Commands::Search { .. } | Commands::Doctor) {
+            let store = store.as_ref().context("No config directory")?;
+            return match command {
+                Commands::Login { chat_id } => login(chat_id, store, config.private).await,
+                Commands::Sync => sync_library(store, config.private).await,
+                Commands::Account => {
+                    println!(
+                        "{}",
+                        Account::load(&store.dir)?
+                            .context("Connect a bot first")?
+                            .connection_key()?
+                    );
+                    Ok(())
+                }
+                Commands::Logout => {
+                    Account::remove(&store.dir)?;
+                    println!("Disconnected. Local and Telegram libraries are unchanged.");
+                    Ok(())
+                }
+                _ => unreachable!(),
+            };
         }
-        let registry = registry.context("No providers configured")?;
+        let registry = Registry::new(&config, store.as_ref().map(|s| s.dir.as_path()))?;
         return match command {
             Commands::Search {
                 query,
@@ -146,18 +144,22 @@ async fn main() -> Result<()> {
                 )
                 .await
             }
-            Commands::Login { client_id, token } => {
-                login(
-                    client_id,
-                    token,
-                    store.as_ref().context("No config directory")?,
-                )
-                .await
-            }
-            Commands::Logout => logout(store.as_ref().context("No config directory")?),
-            Commands::Sync => unreachable!("handled before the registry is needed"),
+            _ => unreachable!("account commands handled above"),
         };
     }
+    let registry = if cli.demo {
+        None
+    } else {
+        Some(Registry::new(
+            &config,
+            store.as_ref().map(|s| s.dir.as_path()),
+        )?)
+    };
+    let account = store
+        .as_ref()
+        .map(|s| Account::load(&s.dir))
+        .transpose()?
+        .flatten();
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!(
             "The TUI needs an interactive terminal. Use `anime-levisione search \"title\" --json` for scripts."
@@ -172,7 +174,10 @@ async fn main() -> Result<()> {
         .map(|s| s.dir.display().to_string())
         .unwrap_or_else(|| "Demo (not saved)".into());
     let mut app = App::new(config, library, path, cli.demo);
-    app.anilist_user = anilist.as_ref().and_then(|client| client.user());
+    if let Some(account) = &account {
+        app.sync_identity = Some(account.identity());
+        app.sync_label = account.label();
+    }
     if cli.demo {
         demo::populate(&mut app);
     }
@@ -197,9 +202,9 @@ async fn main() -> Result<()> {
     let mut effects = Effects {
         store,
         registry,
-        anilist,
-        lookup: None,
-        track: vec![],
+        account,
+        sync_task: None,
+        sync_pending: false,
         tx,
         search: vec![],
         detail: None,
@@ -274,6 +279,7 @@ async fn main() -> Result<()> {
             }
             effects.start_pending_rescan(&mut app);
             effects.flush_progress(&mut app);
+            effects.start_pending_sync(&mut app);
         }
         Ok::<_, anyhow::Error>(())
     }.await;
@@ -340,9 +346,9 @@ impl Drop for TerminalRestore {
 struct Effects {
     store: Option<Store>,
     registry: Option<Registry>,
-    anilist: Option<Arc<anilist::Client>>,
-    lookup: Option<JoinHandle<()>>,
-    track: Vec<JoinHandle<()>>,
+    account: Option<Account>,
+    sync_task: Option<JoinHandle<()>>,
+    sync_pending: bool,
     tx: mpsc::UnboundedSender<Message>,
     search: Vec<JoinHandle<()>>,
     detail: Option<JoinHandle<()>>,
@@ -533,107 +539,128 @@ impl Effects {
                         let _ = tx.send(Message::DownloadEnded(result));
                     }));
                 }
-                Action::Lookup(anime) => {
-                    abort(&mut self.lookup);
-                    let Some(client) = self.anilist.clone() else {
-                        continue;
-                    };
-                    let tx = self.tx.clone();
-                    let key = anime.key();
-                    self.lookup = Some(tokio::spawn(async move {
-                        let result = bounded(client.lookup(&anime))
-                            .await
-                            .map_err(|e| format!("{e:#}"));
-                        let _ = tx.send(Message::Meta { key, result });
-                    }));
-                }
-                Action::Track { anime, event } => {
-                    let Some(client) = self.anilist.clone() else {
-                        continue;
-                    };
-                    let tx = self.tx.clone();
-                    self.track.retain(|handle| !handle.is_finished());
-                    self.track.push(tokio::spawn(async move {
-                        let result = bounded(client.track(&anime, event))
-                            .await
-                            .map_err(|e| format!("{e:#}"));
-                        let _ = tx.send(Message::Tracked(result));
-                    }));
-                }
-                Action::OpenAniListAuth(client_id) => {
-                    let url = anilist::authorize_url(client_id);
-                    let outcome =
-                        open_browser(&url).map_err(|e| format!("could not open a browser: {e:#}"));
-                    if let Err(error) = outcome {
-                        let _ = self.tx.send(Message::Login(Err(error)));
+                Action::Sync => {
+                    if app.sync_enabled() {
+                        self.sync_pending = true;
                     }
                 }
-                Action::AniListLogin { client_id, token } => {
-                    let token = extract_token(&token);
-                    // Synchronous bookkeeping first, so the spawned future
-                    // only owns clones (borrow checker cannot follow `self`
-                    // across the await points).
+                Action::Connect {
+                    credential,
+                    chat_id,
+                } => {
+                    if app.config.private || app.demo || self.account.is_some() {
+                        continue;
+                    }
+                    let tx = self.tx.clone();
+                    abort(&mut self.sync_task);
+                    self.sync_task = Some(tokio::spawn(async move {
+                        let result = sync::Client::connect(&credential, &chat_id)
+                            .await
+                            .map_err(|e| format!("{e:#}"));
+                        let _ = tx.send(Message::Login(result));
+                    }));
+                }
+                Action::AdoptAccount(account) => {
+                    if app.config.private || app.demo || self.account.is_some() {
+                        continue;
+                    }
+                    let result = self
+                        .store
+                        .as_ref()
+                        .context("No persistent library")
+                        .and_then(|s| account.save(&s.dir));
+                    match result {
+                        Ok(()) => {
+                            app.sync_identity = Some(account.identity());
+                            app.sync_label = account.label();
+                            app.connection_key = account.connection_key().unwrap_or_default();
+                            app.modal = Some(app::Modal::ConnectionKey);
+                            self.account = Some(account);
+                            self.sync_pending = true;
+                        }
+                        Err(e) => {
+                            app.notify(format!("Cannot save Telegram credentials: {e:#}"), true)
+                        }
+                    }
+                }
+                Action::ShowConnectionKey => {
+                    if let Some(account) = &self.account {
+                        match account.connection_key() {
+                            Ok(key) => {
+                                app.connection_key = key;
+                                app.modal = Some(app::Modal::ConnectionKey);
+                            }
+                            Err(e) => app.notify(format!("{e:#}"), true),
+                        }
+                    } else {
+                        app.notify("Connect a Telegram bot first", true);
+                    }
+                }
+                Action::Disconnect => {
+                    abort(&mut self.sync_task);
+                    self.sync_pending = false;
                     if let Some(store) = &self.store
-                        && client_id != 0
-                        && client_id != store.config.anilist_client_id
+                        && let Err(e) = Account::remove(&store.dir)
                     {
-                        let mut config = store.config.clone();
-                        config.anilist_client_id = client_id;
-                        let _ = store.save_config(&config);
+                        app.notify(format!("Cannot disconnect: {e:#}"), true);
+                        continue;
                     }
-                    let dir = self.store.as_ref().map(|s| s.dir.clone());
-                    let live = self.anilist.clone();
-                    let tx = self.tx.clone();
-                    tokio::spawn(async move {
-                        if token.is_empty() {
-                            let _ = tx.send(Message::Login(Err("empty token".into())));
-                            return;
-                        }
-                        // Verify through a scratch client so a bad token never
-                        // disturbs the live one, then store and adopt it.
-                        let user = match anilist::Client::with_token(token.clone()) {
-                            Ok(client) => client.viewer().await.map_err(|e| format!("{e:#}")),
-                            Err(e) => Err(format!("{e:#}")),
-                        };
-                        let user = match user {
-                            Ok(user) => user,
-                            Err(error) => {
-                                let _ = tx.send(Message::Login(Err(error)));
-                                return;
-                            }
-                        };
-                        let stored = std::time::SystemTime::now()
-                            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        if let Some(dir) = &dir {
-                            let persist = anilist::Token {
-                                user: user.clone(),
-                                token: token.clone(),
-                                stored,
-                            };
-                            if let Err(e) = persist.save(dir) {
-                                let _ = tx.send(Message::Login(Err(format!(
-                                    "token verified but not saved: {e:#}"
-                                ))));
-                                return;
-                            }
-                        }
-                        if let Some(client) = &live {
-                            client.adopt(token, user.clone());
-                        }
-                        let _ = tx.send(Message::Login(Ok(user)));
-                    });
+                    self.account = None;
+                    app.sync_identity = None;
+                    app.sync_label.clear();
+                    app.connection_key.clear();
+                    app.sync_error = None;
+                    app.notify(
+                        "Disconnected; local and Telegram libraries are unchanged",
+                        false,
+                    );
                 }
             }
         }
         false
+    }
+    fn start_pending_sync(&mut self, app: &mut App) {
+        if !app.sync_enabled() {
+            if app.config.private {
+                abort(&mut self.sync_task);
+            }
+            self.sync_pending = false;
+            return;
+        }
+        if !self.sync_pending
+            || self
+                .sync_task
+                .as_ref()
+                .is_some_and(|task| !task.is_finished())
+        {
+            return;
+        }
+        // A failed local save is retried by the normal debounce, not every UI tick.
+        self.sync_pending = false;
+        self.save(app);
+        if self.progress_dirty {
+            return;
+        }
+        let Some(account) = self.account.clone() else {
+            return;
+        };
+        let library = app.library.clone();
+        let tx = self.tx.clone();
+        self.sync_task = Some(tokio::spawn(async move {
+            let result = match sync::Client::new(account) {
+                Ok(client) => client.sync(&library).await,
+                Err(e) => Err(e),
+            }
+            .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Message::Synced(result));
+        }));
     }
     fn save(&mut self, app: &mut App) {
         self.last_save = Instant::now();
         if let Some(store) = &self.store
             && let Err(e) = store.save(&app.library)
         {
+            self.progress_dirty = true;
             app.notify(format!("Could not save your library: {e:#}"), true);
             return;
         }
@@ -642,6 +669,9 @@ impl Effects {
     fn flush_progress(&mut self, app: &mut App) {
         if self.progress_dirty && self.last_save.elapsed() >= PROGRESS_SAVE_DEBOUNCE {
             self.save(app);
+            if app.sync_enabled() {
+                self.sync_pending = true;
+            }
         }
     }
     fn flush_pending(&mut self, app: &mut App) {
@@ -673,184 +703,54 @@ impl Effects {
             handle.abort();
         }
         abort(&mut self.detail);
-        abort(&mut self.lookup);
-        for handle in self.track.drain(..) {
-            handle.abort();
-        }
+        abort(&mut self.sync_task);
         abort(&mut self.player);
         abort(&mut self.download);
         // Dropping a std thread handle detaches this read-only scan.
         self.rescan.take();
     }
 }
-async fn login(client_id: Option<u32>, token: Option<String>, store: &Store) -> Result<()> {
-    let client_id = client_id.unwrap_or(store.config.anilist_client_id);
-    if client_id == 0 {
-        println!("AniList login needs a client id from https://anilist.co/settings/developer");
-        println!("Create a client (any name, no redirect URL needed), then either:");
-        println!("  anime-levisione login --client-id 1234");
-        println!(
-            "  or set anilist_client_id = 1234 in {}",
-            store.dir.display()
-        );
-        return Ok(());
+async fn login(chat_id: Option<String>, store: &Store, private: bool) -> Result<()> {
+    if private {
+        bail!("Disable private mode before connecting");
     }
-    let url = anilist::authorize_url(client_id);
-    let pasted = match token {
-        // Non-interactive path: `--token` accepts the bare token or the
-        // whole redirect URL, wrapped however the caller has it.
-        Some(pasted) => pasted,
-        None => {
-            println!("1. Open this URL in a browser and authorize anime-levisione:");
-            println!("   {url}");
-            if let Err(e) = open_browser(&url) {
-                println!("   (could not open a browser automatically: {e:#})");
-            }
-            println!("2. Copy the token shown on the authorization page.");
-            println!(
-                "   Pasting the whole https://anilist.co/...#access_token=... URL also works;"
-            );
-            println!(
-                "   if it wraps over several lines, keep going and finish with an empty line."
-            );
-            read_pasted_token()?
-        }
-    };
-    let token = extract_token(&pasted);
-    if token.is_empty() {
-        bail!("AniList token cannot be empty — paste the token or the full redirect URL");
+    if Account::load(&store.dir)?.is_some() {
+        bail!("Disconnect the current bot first");
     }
-    let user = anilist::Client::with_token(token.clone())?
-        .viewer()
-        .await
-        .context("AniList rejected this token")?;
-    anilist::Token {
-        user: user.clone(),
-        token,
-        stored: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-    }
-    .save(&store.dir)?;
-    println!("Logged in as {user}. Watchlist adds and watched episodes sync from the TUI.");
-    Ok(())
-}
-/// Read the pasted token from stdin. Long tokens (and whole redirect URLs)
-/// often arrive wrapped over several lines; every line is kept until a blank
-/// line (interactive) or EOF (pipe) closes the paste. A full redirect URL is
-/// complete on its own, so reading stops as soon as one is recognized.
-fn read_pasted_token() -> Result<String> {
-    use std::io::Write as _;
-    print!("3. Paste the token here: ");
-    io::stdout().flush()?;
-    let interactive = io::stdin().is_terminal();
-    let mut pasted = String::new();
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let read = io::stdin().read_line(&mut line)?;
-        if line.trim().is_empty() || read == 0 {
-            if !pasted.is_empty() {
-                return Ok(pasted);
-            }
-            if read == 0 && !interactive {
-                bail!("No token received on stdin");
-            }
-            println!("Token cannot be empty; paste it again (Ctrl+c to abort):");
-            continue;
-        }
-        pasted.push_str(line.trim());
-        if pasted.contains("token_type=") {
-            return Ok(pasted);
-        }
-    }
-}
-/// Reduce whatever was pasted — bare token, wrapped over lines, or the full
-/// `...#access_token=<token>&token_type=...` redirect URL — to the token.
-fn extract_token(pasted: &str) -> String {
-    let joined: String = pasted.split_whitespace().collect();
-    match joined.split_once("access_token=") {
-        Some((_, tail)) => tail.split('&').next().unwrap_or_default().to_owned(),
-        None => joined,
-    }
-}
-fn logout(store: &Store) -> Result<()> {
-    let path = anilist::Token::path(&store.dir);
-    if path.exists() {
-        std::fs::remove_file(&path).with_context(|| format!("Cannot remove {}", path.display()))?;
-        println!("AniList token removed; metadata still loads anonymously.");
-    } else {
-        println!("No AniList token stored.");
-    }
-    Ok(())
-}
-/// Best effort: open the authorization page; a missing helper is not an error.
-fn open_browser(url: &str) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    let (program, args): (&str, Vec<&str>) = ("open", vec![url]);
-    #[cfg(target_os = "windows")]
-    let (program, args): (&str, Vec<&str>) = ("cmd", vec!["/C", "start", "", url]);
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let (program, args): (&str, Vec<&str>) = ("xdg-open", vec![url]);
-    std::process::Command::new(program)
-        .args(&args)
-        .spawn()
-        .with_context(|| format!("Cannot launch {program}"))?;
-    Ok(())
-}
-/// Backfill the saved watchlist and watched progress to AniList. Runs the
-/// same `track` path the TUI uses — so remote entries are never downgraded —
-/// and reads `library.json` without the lock, so it can run while the TUI is
-/// open.
-async fn sync(store: &Store) -> Result<()> {
-    if store.config.private {
-        bail!("AniList sync is disabled while private mode is on in config.toml");
-    }
-    let client = anilist::Client::open(&store.dir)?;
-    if !client.logged_in() {
-        bail!("Not logged in — run `anime-levisione login` first");
-    }
-    println!(
-        "Syncing to AniList as {} …",
-        client.user().unwrap_or_else(|| "your account".into())
+    eprintln!("First device: create a dedicated bot with @BotFather and send /start to it.");
+    eprintln!(
+        "Other devices: paste the secret alib1 connection key from Settings / `anime-levisione account`."
     );
-    let library: Library = match std::fs::read(store.dir.join("library.json")) {
-        Ok(bytes) => serde_json::from_slice(&bytes).context("Invalid library.json")?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Library::default(),
-        Err(e) => return Err(e.into()),
-    };
-    let mut failures = 0u32;
-    for anime in &library.watchlist {
-        match client
-            .track(anime, anilist::TrackEvent::Watchlist { added: true })
-            .await
-        {
-            Ok(text) => println!("  {text}"),
-            Err(e) => {
-                failures += 1;
-                eprintln!("  {e:#}");
-            }
-        }
-    }
-    for entry in &library.history {
-        let event = anilist::TrackEvent::Watched {
-            number: entry.last_episode.clone(),
-            total: entry.anime.episodes,
-        };
-        match client.track(&entry.anime, event).await {
-            Ok(text) => println!("  {text}"),
-            Err(e) => {
-                failures += 1;
-                eprintln!("  {e:#}");
-            }
-        }
-    }
-    if failures == 0 {
-        println!("Done.");
+    let credential = if io::stdin().is_terminal() {
+        rpassword::prompt_password("Bot token or connection key: ")?
     } else {
-        println!("{failures} title(s) could not be synced (see above).");
+        use std::io::Read;
+        let mut value = String::new();
+        io::stdin().take(8192).read_to_string(&mut value)?;
+        value
+    };
+    let account =
+        sync::Client::connect(&credential, chat_id.as_deref().unwrap_or_default()).await?;
+    account.save(&store.dir)?;
+    println!(
+        "Connected. Save the secret key with `anime-levisione account` before syncing other devices."
+    );
+    sync_library(store, private).await
+}
+async fn sync_library(store: &Store, private: bool) -> Result<()> {
+    if private {
+        bail!("Sync is disabled in private mode");
     }
+    let mut account = Account::load(&store.dir)?.context("Connect your Telegram bot first")?;
+    let outcome = sync::Client::new(account.clone())?
+        .sync(&store.library)
+        .await?;
+    let mut library = store.library.clone();
+    outcome.apply(&mut library)?;
+    store.save(&library)?;
+    account.mark_initialized();
+    account.save(&store.dir)?;
+    println!("Library synchronized with your Telegram bot.");
     Ok(())
 }
 async fn search_cli(
@@ -968,18 +868,14 @@ async fn doctor(config: &Config, registry: &Registry, store: &Store) -> Result<(
     if healthy == 0 {
         bail!("No provider is reachable");
     }
-    match anilist::Client::open(&store.dir) {
-        Ok(client) if client.logged_in() => match bounded(client.viewer()).await {
-            Ok(user) => println!("OK AniList: logged in as {user}"),
-            Err(e) => println!("!! AniList: {e:#}"),
-        },
-        Ok(client) => match bounded(client.search("frieren")).await {
-            Ok(_) => {
-                println!("-- AniList: reachable · not logged in (`anime-levisione login` to sync)")
-            }
-            Err(e) => println!("!! AniList: {e:#}"),
-        },
-        Err(e) => println!("!! AniList: {e:#}"),
+    match Account::load(&store.dir)? {
+        Some(account) => println!(
+            "-- {} · use `anime-levisione sync` to check remote sync",
+            account.label()
+        ),
+        None => {
+            println!("-- Telegram: local only; `anime-levisione login` to connect a personal bot")
+        }
     }
     Ok(())
 }
@@ -989,37 +885,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extract_token_accepts_bare_tokens_wrapped_lines_and_redirect_urls() {
-        let token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.veryLongPadding";
-        // Bare token, single line.
-        assert_eq!(extract_token(token), token);
-        // Same token wrapped over three pasted lines.
-        assert_eq!(
-            extract_token(&format!(
-                "{}\n{}\n{}\n",
-                &token[..20],
-                &token[20..40],
-                &token[40..]
-            )),
-            token
+    fn sync_and_connection_key_have_explicit_cli_commands() {
+        assert!(matches!(
+            Cli::try_parse_from(["anime-levisione", "sync"])
+                .expect("CLI")
+                .command,
+            Some(Commands::Sync)
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["anime-levisione", "account"])
+                .expect("CLI")
+                .command,
+            Some(Commands::Account)
+        ));
+        assert!(
+            Cli::try_parse_from(["anime-levisione", "login", "--token", "secret"]).is_err(),
+            "credentials never belong in process arguments"
         );
-        // Full redirect URL, URL-fragment style.
-        assert_eq!(
-            extract_token(&format!(
-                "https://anilist.co/api/v2/oauth/paste#access_token={token}&token_type=Bearer&expires_in=315360000"
-            )),
-            token
-        );
-        // Redirect URL itself wrapped mid-token.
-        assert_eq!(
-            extract_token(&format!(
-                "https://anilist.co/api/v2/oauth/paste#access_token={}\n{}&token_type=Bearer",
-                &token[..30],
-                &token[30..]
-            )),
-            token
-        );
-        assert_eq!(extract_token("   \n  "), "");
     }
 
     #[tokio::test]
@@ -1072,6 +954,46 @@ mod tests {
     }
 
     #[test]
+    fn failed_sync_save_waits_for_debounce_instead_of_retrying_every_tick() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(Some(dir.path().into()))?;
+        std::fs::create_dir(dir.path().join("library.json"))?;
+        let mut app = App::new(
+            store.config.clone(),
+            Library::default(),
+            "test".into(),
+            false,
+        );
+        app.sync_identity = Some("account".into());
+        let (tx, _) = mpsc::unbounded_channel();
+        let mut effects = Effects {
+            store: Some(store),
+            registry: None,
+            account: None,
+            sync_task: None,
+            sync_pending: true,
+            tx,
+            search: vec![],
+            detail: None,
+            player: None,
+            download: None,
+            rescan: None,
+            rescan_pending: false,
+            demo_catalog: vec![],
+            progress_dirty: false,
+            last_save: Instant::now(),
+        };
+        effects.start_pending_sync(&mut app);
+        assert!(effects.progress_dirty);
+        assert!(!effects.sync_pending);
+        let attempted = effects.last_save;
+        effects.start_pending_sync(&mut app);
+        assert_eq!(attempted, effects.last_save);
+        assert!(effects.sync_task.is_none());
+        Ok(())
+    }
+
+    #[test]
     fn rescans_during_a_running_scan_are_coalesced_not_lost() {
         let directory = tempfile::tempdir().expect("offline directory");
         let config = Config {
@@ -1084,9 +1006,9 @@ mod tests {
         let mut effects = Effects {
             store: None,
             registry: None,
-            anilist: None,
-            lookup: None,
-            track: vec![],
+            account: None,
+            sync_task: None,
+            sync_pending: false,
             tx,
             search: vec![],
             detail: None,

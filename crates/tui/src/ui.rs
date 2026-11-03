@@ -2,10 +2,7 @@ use crate::{
     app::{App, COMMANDS, Focus, Modal, Pane, PaneRegion, View},
     input::Input,
 };
-use anime_levisione_core::{
-    anilist,
-    model::{Anime, ProviderId},
-};
+use anime_levisione_core::model::{Anime, ProviderId};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint as C, Layout, Rect},
@@ -470,7 +467,6 @@ fn details(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
     let anime = app.detail().map_or(selected, |(a, _)| a);
-    let entry = app.meta.get(&anime.key()).and_then(|m| m.as_ref());
     let mut lines = vec![
         Line::from(Span::styled(
             anime.title.clone(),
@@ -506,45 +502,8 @@ fn details(frame: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(Color::Yellow),
         ),
     ]));
-    if let Some(entry) = entry {
-        // Score and episode count fill in what the streaming source omits.
-        let episodes = if anime.episodes == 0 && entry.episodes.is_some() {
-            format!("{} episodes", entry.episodes.unwrap_or_default())
-        } else {
-            String::new()
-        };
-        let bits = [
-            (!entry.display_score().is_empty()).then(|| format!("★ {}", entry.display_score())),
-            (!entry.display_status().is_empty()).then(|| entry.display_status()),
-            (!episodes.is_empty()).then_some(episodes),
-            (!entry.genres.is_empty()).then(|| {
-                entry
-                    .genres
-                    .iter()
-                    .take(4)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            }),
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join("  ·  ");
-        if !bits.is_empty() {
-            lines.push(Line::from(vec![
-                accent("AniList"),
-                dim("  |  "),
-                Span::raw(bits),
-            ]));
-        }
-    } else if app.meta_pending.is_some() {
-        lines.push(Line::from(dim("AniList: looking up…")));
-    }
     if !anime.genres.is_empty() {
         lines.push(Line::from(dim(anime.genres.join(" · "))));
-    } else if let Some(entry) = entry.filter(|m| !m.genres.is_empty()) {
-        lines.push(Line::from(dim(entry.genres.join(" · "))));
     }
     if app.library.bookmarked(anime) {
         lines.push(Line::from(Span::styled(
@@ -565,8 +524,6 @@ fn details(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     lines.push(Line::from(if !anime.synopsis.is_empty() {
         Span::raw(anime.synopsis.clone())
-    } else if let Some(entry) = entry.filter(|m| !m.plain_description().is_empty()) {
-        Span::raw(entry.plain_description())
     } else {
         dim("No synopsis supplied by this source.")
     }));
@@ -722,7 +679,8 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
         Modal::Commands => 24,
         Modal::Diagnostics => 18,
         Modal::Help => 30,
-        Modal::Login => 12,
+        Modal::Login => 14,
+        Modal::ConnectionKey => 18,
         Modal::Audio => app
             .audio_prompt
             .as_ref()
@@ -742,7 +700,8 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
         Modal::Commands => "Commands · type to filter · Esc to close",
         Modal::Settings => "Settings & paths · Esc to close",
         Modal::Diagnostics => "Provider diagnostics · Esc to close",
-        Modal::Login => "AniList login · Tab field · Enter login · o open page · Esc cancel",
+        Modal::Login => "Personal Telegram bot · Tab field · Enter connect · Esc cancel",
+        Modal::ConnectionKey => "Secret connection key · Esc close and hide",
         Modal::Quit => "Quit anime-levisione?",
         Modal::Audio => "Choose audio language · ↑/↓ select · Enter play · Esc cancel",
     };
@@ -791,13 +750,13 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
         );
         return;
     }
+    if modal == Modal::ConnectionKey {
+        frame.render_widget(Paragraph::new(format!(
+            "SECRET: grants access to your bot and library. Save it privately.\nPaste this key on your other devices (Telegram login):\n\n{}\n\nYou can also retrieve it with `anime-levisione account`.\nNever post it in the bot chat or share it publicly.", app.connection_key
+        )).wrap(Wrap { trim: false }), inner);
+        return;
+    }
     if modal == Modal::Login {
-        let client_id = app.login_client_id.value.trim().parse::<u32>().unwrap_or(0);
-        let url = if client_id > 0 {
-            anilist::authorize_url(client_id)
-        } else {
-            "enter your client id — create one at anilist.co/settings/developer".into()
-        };
         let rows = Layout::vertical([
             C::Length(1),
             C::Length(1),
@@ -810,14 +769,18 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
         ])
         .split(inner);
         frame.render_widget(
-            Paragraph::new("Authorize URL (o opens it in your browser):")
-                .style(Style::default().fg(ACCENT)),
+            Paragraph::new(
+                "First device: create a dedicated bot with @BotFather; send /start to it.",
+            )
+            .style(Style::default().fg(ACCENT)),
             rows[0],
         );
         frame.render_widget(
-            Paragraph::new(url.clone())
-                .wrap(Wrap { trim: false })
-                .style(Style::default().fg(Color::Gray)),
+            Paragraph::new(
+                "Other devices: paste the secret alib1 connection key from your first device.",
+            )
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(Color::Gray)),
             rows[1],
         );
         frame.render_widget(Paragraph::new(""), rows[2]);
@@ -850,21 +813,21 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
         field(
             frame,
             rows[3],
-            "Client ID:",
-            &app.login_client_id,
+            "Chat ID:",
+            &app.login_chat_id,
             app.login_field == 0,
         );
         field(
             frame,
             rows[5],
-            "Token:",
-            &app.login_token,
+            "Secret:",
+            &Input::new("•".repeat(app.login_token.value.chars().count())),
             app.login_field == 1,
         );
         let hint = if app.login_busy {
-            "Verifying token with AniList …"
+            "Connecting to your Telegram bot …"
         } else {
-            "Paste works: whole redirect URL or wrapped token · Tab switches field"
+            "Secret = bot token or connection key · Chat ID optional after a recent /start"
         };
         frame.render_widget(
             Paragraph::new(hint).style(Style::default().fg(ACCENT)),
@@ -906,7 +869,7 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
     }
     let lines = match modal {
         // The login form is fully drawn by its own branch above.
-        Modal::Login => vec![],
+        Modal::Login | Modal::ConnectionKey => vec![],
         Modal::Help => vec![
             "NAVIGATION",
             "  / or 1       Search anime (350 ms debounce, all sources)",
@@ -930,7 +893,7 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
             "  r            Refresh results or retry focused episodes",
             "  P            Toggle private mode (no automatic history)",
             "  : / Ctrl+p   Command palette   , settings   ! diagnostics",
-            "  AniList login & sync status live in the command palette",
+            "  Telegram connect / sync / connection key: command palette",
             "  q / Ctrl+c   Quit (asks before stopping active jobs)",
             "",
             "ABOUT",
@@ -954,10 +917,12 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
                 app.config.streamingcommunity_url
             )),
             Line::from(format!(
-                "AniList: {}",
-                app.anilist_user
-                    .clone()
-                    .unwrap_or_else(|| "not logged in · `anime-levisione login` to sync".into())
+                "Sync: {}",
+                if app.sync_label.is_empty() {
+                    "local only · `anime-levisione login` to connect"
+                } else {
+                    &app.sync_label
+                }
             )),
             Line::from(format!("Private mode: {}", app.config.private)),
             Line::from(""),
@@ -1010,19 +975,19 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
             }
             let (text, color) = if app.config.private {
                 (
-                    "AniList: disabled (private mode keeps everything local)".to_string(),
+                    "Telegram sync: disabled in private mode".to_string(),
                     Color::Yellow,
                 )
-            } else if let Some(error) = &app.anilist_error {
-                (format!("AniList: {error}"), Color::Red)
-            } else if let Some(user) = &app.anilist_user {
+            } else if let Some(error) = &app.sync_error {
+                (format!("Telegram sync: {error}"), Color::Red)
+            } else if app.sync_identity.is_some() {
                 (
-                    format!("AniList: syncing as {user} · watchlist and progress mirror outward"),
+                    format!("{} · bidirectional encrypted sync", app.sync_label),
                     ACTIVE,
                 )
             } else {
                 (
-                    "AniList: metadata only · run `anime-levisione login` to sync".to_string(),
+                    "Telegram sync: local only · `anime-levisione login` to connect".to_string(),
                     ACTIVE,
                 )
             };
@@ -1333,14 +1298,14 @@ mod tests {
         Ok(())
     }
     #[test]
-    fn anilist_metadata_enriches_the_details_panel() -> anyhow::Result<()> {
+    fn details_use_only_provider_metadata() -> anyhow::Result<()> {
         let mut app = App::new(Config::default(), Library::default(), "test".into(), false);
         let anime = anime_levisione_core::model::Anime {
             provider: anime_levisione_core::model::ProviderId::AnimeUnity,
             id: "7".into(),
             title: "Frieren".into(),
             aliases: vec![],
-            synopsis: String::new(),
+            synopsis: "Elven mage".into(),
             year: "2023".into(),
             kind: "TV".into(),
             status: String::new(),
@@ -1355,19 +1320,6 @@ mod tests {
         app.details.insert(anime.key(), (anime.clone(), vec![]));
         app.rebuild();
         app.titles.select(Some(0));
-        app.anilist_user = Some("viewer".into());
-        app.meta.insert(
-            anime.key(),
-            Some(anime_levisione_core::anilist::MediaEntry {
-                id: 21,
-                average_score: Some(86),
-                status: Some("FINISHED".into()),
-                episodes: Some(28),
-                genres: vec!["Adventure".into(), "Fantasy".into()],
-                description: Some("<i>Elven</i> mage".into()),
-                ..anime_levisione_core::anilist::MediaEntry::default()
-            }),
-        );
         let mut terminal = Terminal::new(TestBackend::new(160, 50))?;
         terminal.draw(|f| draw(f, &mut app))?;
         let text: String = terminal
@@ -1377,7 +1329,7 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        for label in ["AniList", "★ 8.6", "Finished", "28 episodes", "Elven mage"] {
+        for label in ["AnimeUnity", "Elven mage", "2023"] {
             assert!(text.contains(label), "missing {label}");
         }
         Ok(())
@@ -1395,6 +1347,7 @@ mod tests {
                 Some(Modal::Quit),
                 Some(Modal::Audio),
                 Some(Modal::Login),
+                Some(Modal::ConnectionKey),
             ] {
                 app.modal = modal;
                 let mut terminal = Terminal::new(TestBackend::new(width, height))?;

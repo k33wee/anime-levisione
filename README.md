@@ -56,7 +56,7 @@ Other ways to start it:
 ```sh
 anime-levisione --demo          # offline preview; no network or saved data
 anime-levisione --player mpv    # choose a player
-anime-levisione --private       # disable AniList and automatic history writes
+anime-levisione --private       # disable sync and automatic history writes
 anime-levisione doctor          # check player, configuration and providers
 ```
 
@@ -77,25 +77,51 @@ Click to focus a pane or select a row; scroll with the wheel. The layout fits
 from 60×18; smaller windows show the focused pane. When several audio languages
 are available, select one with the arrows and confirm with `Enter`.
 
-### Library and AniList
+### Library and personal Telegram sync
 
 Watchlist, history and resume points are stored locally. Press `,` to see data
 paths; `config.toml` holds the player, its arguments, download directory and
 provider mirrors. Use `--data-dir` for a separate library.
 
-AniList is optional. [Create an OAuth client](https://anilist.co/settings/developer),
-then run:
+Optional cross-device sync uses **your own dedicated Telegram bot**, without an
+application account or project server. Create a bot with @BotFather, send `/start`
+to it, then connect from the command palette or:
 
 ```sh
-anime-levisione login --client-id YOUR_ID
-anime-levisione sync
-anime-levisione logout
+anime-levisione login     # first device: paste your bot token into the hidden prompt
+anime-levisione sync      # synchronize lists and progress in both directions
+anime-levisione account   # show the SECRET connection key for your other devices
+anime-levisione logout    # disconnect only; keeps both libraries
 ```
 
-Login is also available in the command palette. Sync sends your watchlist and
-watched progress without lowering existing AniList progress. Private mode stops
-AniList requests and automatic history/search writes, but does not erase your
-existing library or prevent explicit watchlist edits.
+Watchlist, watched/unwatched episodes and resume points are encrypted and stored
+in a pinned document in your bot chat. Devices need not be online simultaneously.
+Lists use provider IDs, not approximate title matches. Private mode disables sync
+and automatic history/search writes, not existing data or explicit local edits.
+
+#### Pair another TUI or APK
+
+Sync works **TUI ↔ TUI, TUI ↔ APK and APK ↔ APK**. The first device can be either
+client; all devices belonging to the same library must use the **same bot and
+full `alib1.…` connection key**. Do not create another bot for each device.
+
+1. Finish the first sync, then retrieve the key with **Show secret connection
+   key** in the app/TUI or `anime-levisione account`.
+2. On another TUI, run `anime-levisione login` or choose **Connect personal
+   Telegram bot** from the command palette. Paste the **connection key**, not
+   just the BotFather token. On Android, use Settings → Personal Telegram sync.
+3. Edits made on either client reach the others on their next sync, even if the
+   devices are never online together. With clients open, sync runs approximately
+   every minute; use **Sync library now** in the TUI or **Sync library** in the APK
+   to request it manually.
+
+Close the TUI before running account/sync CLI commands against the same data
+directory, or use its command palette instead. Install a sync-capable build on
+**every** device: older AniList-only releases cannot join. Keep the connection
+key private and backed up; losing it and all local profiles makes the encrypted
+copy unrecoverable.
+
+[Setup, recovery and concurrent-write limitations →](docs/telegram-sync.md)
 
 ---
 
@@ -121,7 +147,7 @@ not provider posters or footage.*
 - **Download:** HLS/MP4 episodes with audio and quality preferences, Wi-Fi only by
   default. Completed downloads play from the app's cache even if the source link
   expires. Pause, resume and remove them from Downloads.
-- **Settings:** AniList metadata/login/sync, private mode, provider mirrors and
+- **Settings:** personal Telegram sync, private mode, provider mirrors and
   connectivity diagnostics.
 
 <img src="docs/screenshots/android-fullscreen.png" width="680" alt="Landscape fullscreen player">
@@ -166,15 +192,15 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 
 ### Library and account
 
-Downloads, library data and AniList credentials stay in app-private storage.
-Removing a download keeps your progress; uninstalling the app removes its data.
-The library format matches the TUI, but files and resume positions are not
-automatically shared between devices.
+Downloads, library data and bot credentials stay in app-private storage.
+Removing a download keeps your progress; uninstalling removes local data. Optional
+Telegram sync keeps an encrypted remote copy of lists and resume points, not media.
 
-To connect AniList, enter your OAuth client ID in Settings, authorize in the
-browser and paste the token or redirect URL. Private viewing disables new
-automatic history/search writes and AniList requests, not existing library data
-or explicit edits.
+In Settings → Personal Telegram sync, connect your new bot or paste the secret
+`alib1.…` connection key from another device. Save that key before uninstalling.
+Synchronization runs while the client is open; Telegram is not a transactional
+database, so racing snapshots converge when the involved devices sync again.
+[Full setup and limitations →](docs/telegram-sync.md)
 
 [Android setup, tests and storage details →](android/README.md)
 
@@ -192,7 +218,7 @@ make act         # run the GitHub workflow locally; requires Docker
 
 | Path | Contents |
 | --- | --- |
-| `crates/core` | Providers, library and AniList; shared through UniFFI |
+| `crates/core` | Providers, library and encrypted Telegram sync; shared through UniFFI |
 | `crates/tui` | Terminal application |
 | `crates/bindgen` | Kotlin bindings generator |
 | `android` | Android application and build scripts |
@@ -205,5 +231,5 @@ builds/lints/tests Android on API 26 and 35 emulators. Commits follow
 ## License
 
 GPL-3.0-only. No content is bundled. The project is not affiliated with its
-providers, AniList or Rai/Melevisione. Availability depends on the upstream
+providers, Telegram or Rai/Melevisione. Availability depends on the upstream
 services; use them in accordance with applicable rights and terms.

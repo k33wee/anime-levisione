@@ -31,10 +31,6 @@ pub struct Config {
     /// stops answering. Full `https://host` URLs.
     #[serde(default)]
     pub streamingcommunity_domains: Vec<String>,
-    /// AniList OAuth client id from https://anilist.co/settings/developer.
-    /// 0 (unset) disables the guided login; metadata still works anonymously.
-    #[serde(default)]
-    pub anilist_client_id: u32,
     pub private: bool,
 }
 impl Default for Config {
@@ -52,7 +48,6 @@ impl Default for Config {
             animeunity_domains: vec![],
             streamingcommunity_url: "https://streamingcommunityz.day".into(),
             streamingcommunity_domains: vec![],
-            anilist_client_id: 0,
             private: false,
         }
     }
@@ -176,14 +171,14 @@ fn executable_names(name: &Path) -> [PathBuf; 1] {
     [name.to_path_buf()]
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Progress {
     pub episode: Episode,
     pub seconds: f64,
     pub duration: f64,
     pub completed: bool,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HistoryEntry {
     pub anime: Anime,
     pub last_episode: String,
@@ -197,6 +192,8 @@ pub struct Library {
     pub watchlist: Vec<Anime>,
     pub history: Vec<HistoryEntry>,
     pub recent_searches: Vec<String>,
+    /// Non-secret merge baseline; committed atomically with the visible library.
+    pub sync_checkpoint: Option<crate::sync::Checkpoint>,
 }
 impl Library {
     pub fn bookmarked(&self, anime: &Anime) -> bool {
@@ -282,9 +279,8 @@ impl Store {
             _lock: Some(lock),
         })
     }
-    /// Read-only view: same config and library as `open`, but no lock is
-    /// taken, so one-shot commands like AniList `sync` work even while the
-    /// TUI is running. `save` refuses rather than racing the TUI.
+    /// Read-only view for tools that do not mutate the library.
+    /// Bidirectional sync must use `open` and hold the exclusive lock.
     pub fn open_readonly(dir: Option<PathBuf>) -> Result<Self> {
         let (dir, config, library) = Self::load(dir)?;
         Ok(Self {
@@ -304,7 +300,7 @@ impl Store {
         fs::create_dir_all(&dir).with_context(|| format!("Cannot create {}", dir.display()))?;
         let config_path = dir.join("config.toml");
         let config = match fs::read_to_string(&config_path) {
-            Ok(text) => toml::from_str(&text).with_context(|| {
+            Ok(text) => parse_config(&text).with_context(|| {
                 format!(
                     "Invalid {}; fix it before starting (file was not changed)",
                     config_path.display()
@@ -328,7 +324,7 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Library::default(),
             Err(e) => return Err(e.into()),
         };
-        if library.version > 1 {
+        if library.version > 2 {
             bail!("This library was written by a newer anime-levisione; update before opening it");
         }
         Ok((dir, config, library))
@@ -338,13 +334,13 @@ impl Store {
             bail!("This store is read-only; the TUI owns the library right now");
         }
         let mut library = library.clone();
-        library.version = 1;
+        library.version = 2;
         atomic_write(
             &self.dir.join("library.json"),
             &serde_json::to_vec_pretty(&library)?,
         )
     }
-    /// Persist config.toml (e.g. a client id entered in the TUI login form).
+    /// Persist config.toml.
     pub fn save_config(&self, config: &Config) -> Result<()> {
         if self._lock.is_none() {
             bail!("This store is read-only; the TUI owns the library right now");
@@ -355,6 +351,15 @@ impl Store {
         )
     }
 }
+fn parse_config(text: &str) -> Result<Config> {
+    let mut value: toml::Value = toml::from_str(text)?;
+    // Accept the removed setting when upgrading, but never write it back.
+    if let Some(table) = value.as_table_mut() {
+        table.remove("anilist_client_id");
+    }
+    Ok(value.try_into()?)
+}
+
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().context("File must have a parent directory")?;
     fs::create_dir_all(parent)?;
@@ -413,6 +418,14 @@ mod tests {
             find_in_directories(Path::new("mpv"), [dir.path().to_path_buf()]).as_deref(),
             Some(executable.as_path())
         );
+        Ok(())
+    }
+    #[test]
+    fn legacy_config_migrates_without_accepting_other_unknown_settings() -> Result<()> {
+        let config = parse_config("anilist_client_id = 123\nprivate = true\n")?;
+        assert!(config.private);
+        assert!(!toml::to_string(&config)?.contains("anilist"));
+        assert!(parse_config("surprise_setting = true").is_err());
         Ok(())
     }
     #[test]

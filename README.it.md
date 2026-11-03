@@ -58,7 +58,7 @@ Altre opzioni di avvio:
 ```sh
 anime-levisione --demo          # anteprima offline, senza rete né salvataggi
 anime-levisione --player mpv    # scegli il player
-anime-levisione --private       # disabilita AniList e la cronologia automatica
+anime-levisione --private       # disabilita sync e cronologia automatica
 anime-levisione doctor          # controlla player, configurazione e provider
 ```
 
@@ -79,25 +79,53 @@ Clic per attivare un pannello o selezionare una riga, rotella per scorrere.
 Il layout entra da 60×18; le finestre più piccole mostrano il pannello attivo.
 Se sono disponibili più lingue audio, scegli con le frecce e conferma con `Enter`.
 
-### Libreria e AniList
+### Libreria e sincronizzazione Telegram personale
 
 Watchlist, cronologia e punti di ripresa vengono salvati in locale. Premi `,`
 per vedere i percorsi dei dati; `config.toml` contiene player, argomenti,
 cartella download e mirror dei provider. `--data-dir` usa una libreria separata.
 
-AniList è facoltativo. [Crea un client OAuth](https://anilist.co/settings/developer),
-poi esegui:
+La sincronizzazione facoltativa usa **un tuo bot Telegram dedicato**, senza
+account dell'app né server del progetto. Crea il bot tramite @BotFather, invia
+`/start` nella sua chat e collegalo dalla palette comandi oppure:
 
 ```sh
-anime-levisione login --client-id IL_TUO_ID
-anime-levisione sync
-anime-levisione logout
+anime-levisione login     # primo dispositivo: incolla il token nel prompt nascosto
+anime-levisione sync      # sincronizza liste e progressi in entrambe le direzioni
+anime-levisione account   # mostra la chiave SEGRETA per gli altri dispositivi
+anime-levisione logout    # scollega soltanto, conserva entrambe le librerie
 ```
 
-Puoi accedere anche dalla palette comandi. La sincronizzazione invia watchlist e
-progressi senza abbassare quelli già presenti su AniList. La modalità privata
-blocca le richieste AniList e i salvataggi automatici di cronologia e ricerche:
-non cancella la libreria esistente né impedisce modifiche esplicite alla watchlist.
+Watchlist, visti/non visti e punti di ripresa vengono cifrati e salvati in un
+documento fissato nella chat del bot. I dispositivi possono sincronizzarsi in
+momenti diversi. I titoli sono identificati dagli ID dei provider, non dal nome.
+La modalità privata blocca sync e salvataggi automatici di cronologia e ricerche,
+non i dati esistenti o le modifiche locali esplicite.
+
+#### Collegare un'altra TUI o un APK
+
+La sync funziona **TUI ↔ TUI, TUI ↔ APK e APK ↔ APK**. Il primo dispositivo può
+usare uno qualsiasi dei due client; quelli della stessa libreria devono usare
+**lo stesso bot e la chiave completa `alib1.…`**. Non creare un bot per ogni
+dispositivo.
+
+1. Completa la prima sincronizzazione e recupera la chiave con **Show secret
+   connection key** nell'app/TUI oppure con `anime-levisione account`.
+2. Sull'altra TUI esegui `anime-levisione login` o scegli **Connect personal
+   Telegram bot** dalla palette. Incolla la **chiave di connessione**, non il solo
+   token di BotFather. Su Android usa Settings → Personal Telegram sync.
+3. Le modifiche di ciascun client arrivano agli altri alla sync successiva, anche
+   se i dispositivi non sono mai online insieme. Con i client aperti, la sync
+   avviene circa ogni minuto; puoi richiederla subito con **Sync library now**
+   nella TUI o **Sync library** nell'APK.
+
+Chiudi la TUI prima di eseguire i comandi CLI account/sync sulla stessa cartella
+dati, oppure usa la sua palette. Installa una build con questa integrazione su
+**ogni** dispositivo: le vecchie release con il solo AniList non possono
+collegarsi. Conserva privatamente una copia della chiave: perdendo sia questa
+sia tutti i profili locali, la libreria cifrata non è recuperabile.
+
+[Configurazione, recupero e limiti delle scritture simultanee →](docs/telegram-sync.md)
 
 ---
 
@@ -124,7 +152,7 @@ non locandine o fotogrammi dei provider.*
 - **Download:** episodi HLS/MP4 con preferenze audio e qualità, solo Wi-Fi di
   default. I download completati funzionano dalla cache dell'app anche se il
   link originale scade. Si possono sospendere, riprendere e rimuovere da Downloads.
-- **Impostazioni:** metadati, accesso e sincronizzazione AniList, modalità privata,
+- **Impostazioni:** sincronizzazione Telegram personale, modalità privata,
   mirror dei provider e diagnostica della connessione.
 
 <img src="docs/screenshots/android-fullscreen.png" width="680" alt="Player a schermo intero orizzontale">
@@ -169,15 +197,17 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 
 ### Libreria e account
 
-Download, libreria e credenziali AniList restano nello spazio privato dell'app.
-Rimuovere un download conserva i progressi; disinstallare l'app elimina i suoi
-dati. Il formato della libreria è quello della TUI, ma file e punti di ripresa
-non vengono condivisi automaticamente fra dispositivi.
+Download, libreria e credenziali del bot restano nello spazio privato dell'app.
+Rimuovere un download conserva i progressi; disinstallare elimina i dati locali.
+La sync Telegram facoltativa conserva una copia cifrata delle liste e dei punti
+di ripresa, non dei video.
 
-Per collegare AniList, inserisci il client ID OAuth in Settings, autorizza nel
-browser e incolla il token o l'URL di ritorno. La modalità privata disabilita i
-nuovi salvataggi automatici di cronologia e ricerche e le richieste AniList, non
-i dati già presenti o le modifiche esplicite.
+In Settings → Personal Telegram sync collega il nuovo bot oppure incolla la
+chiave segreta `alib1.…` del primo dispositivo. Conservala prima di disinstallare.
+La sincronizzazione funziona con il client aperto: Telegram non è un database
+transazionale, quindi eventuali scritture simultanee convergono quando i
+dispositivi coinvolti si sincronizzano nuovamente.
+[Configurazione completa e limiti →](docs/telegram-sync.md)
 
 [Configurazione, test e dettagli sullo spazio dati Android →](android/README.md)
 
@@ -195,7 +225,7 @@ make act         # esegue il workflow GitHub in locale; richiede Docker
 
 | Percorso | Contenuto |
 | --- | --- |
-| `crates/core` | Provider, libreria e AniList; condivisi tramite UniFFI |
+| `crates/core` | Provider, libreria e sync Telegram cifrata; condivisi tramite UniFFI |
 | `crates/tui` | Applicazione da terminale |
 | `crates/bindgen` | Generatore dei binding Kotlin |
 | `android` | Applicazione Android e script di compilazione |
@@ -208,5 +238,5 @@ compila, analizza e testa Android su emulatori API 26 e 35. I commit seguono i
 ## Licenza
 
 GPL-3.0-only. Non vengono distribuiti contenuti. Il progetto non è affiliato ai
-provider, ad AniList o a Rai/Melevisione. La disponibilità dipende dai servizi
+provider, a Telegram o a Rai/Melevisione. La disponibilità dipende dai servizi
 originali; usali nel rispetto dei diritti e delle condizioni applicabili.

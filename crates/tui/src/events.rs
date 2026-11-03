@@ -1,9 +1,9 @@
 use crate::playback::OfflineEpisode;
 use anime_levisione_core::{
-    anilist::MediaEntry,
     audio::AudioTrack,
     model::{Anime, Episode, ProviderId},
     store::Progress,
+    sync::{Account, Outcome},
 };
 
 pub enum Message {
@@ -13,16 +13,8 @@ pub enum Message {
         provider: ProviderId,
         url: String,
     },
-    /// AniList metadata for a title; `None` means no confident match.
-    Meta {
-        key: String,
-        result: Result<Option<MediaEntry>, String>,
-    },
-    /// Outcome of mirroring a watchlist/progress change to AniList.
-    Tracked(Result<String, String>),
-    /// Outcome of a TUI AniList login: `Ok(username)` once the token is
-    /// verified, stored, and adopted by the live client.
-    Login(Result<String, String>),
+    Synced(Result<Outcome, String>),
+    Login(Result<Account, String>),
     Catalog {
         generation: u64,
         provider: ProviderId,

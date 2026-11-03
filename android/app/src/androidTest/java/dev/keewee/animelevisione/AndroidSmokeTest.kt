@@ -10,6 +10,7 @@ import android.graphics.drawable.AdaptiveIconDrawable
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Build
+import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.width
@@ -120,6 +121,31 @@ class AndroidSmokeTest {
         compose.activityRule.scenario.recreate()
         compose.onNodeWithTag("searchField").assertIsDisplayed()
         AnimeLib().use { assertTrue(it.watchlist().isEmpty()) }
+    }
+
+    @Test
+    fun personalBotSettingsAndConnectionKeyAreProtected() {
+        val vm = ViewModelProvider(compose.activity)[CatalogViewModel::class.java]
+        compose.waitUntil(20_000) { vm.settings != null }
+        compose.onNodeWithTag("navSettings").performClick()
+        compose.onNodeWithText("Personal Telegram sync").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("AniList").assertDoesNotExist()
+        compose.onNodeWithText("Connect bot / another device").performScrollTo().performClick()
+        compose.onNodeWithText("Connect your Telegram bot").assertIsDisplayed()
+        compose.runOnIdle {
+            assertTrue((compose.activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE) != 0)
+        }
+        compose.onNodeWithText("Cancel").performClick()
+        compose.runOnIdle { vm.connectionKey = "alib1.synthetic-test-key-not-a-real-credential" }
+        compose.onNodeWithText("Secret connection key").assertIsDisplayed()
+        compose.runOnIdle {
+            assertTrue((compose.activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE) != 0)
+        }
+        compose.onNodeWithText("Close and hide").performClick()
+        compose.runOnIdle {
+            assertNull(vm.connectionKey)
+            assertEquals(0, compose.activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE)
+        }
     }
 
     @Test

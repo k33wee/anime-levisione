@@ -123,7 +123,6 @@ class DemoScreenshotsTest {
                     "https://world.example",
                     "https://unity.example",
                     "https://community.example",
-                    0u,
                 ),
             )
             seed(

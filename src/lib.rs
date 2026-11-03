@@ -1,4 +1,3 @@
-pub mod anilist;
 pub mod app;
 pub mod audio;
 pub mod demo;

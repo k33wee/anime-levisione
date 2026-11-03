@@ -1,10 +1,10 @@
 //! Blocking mobile facade. Call on an I/O dispatcher, never the UI thread.
-//! The same validated providers, atomic library store and AniList client as the TUI.
+//! The same providers, atomic library store and personal Telegram sync as the TUI.
 use crate::{
-    anilist::{self, TrackEvent},
     model::{self, Anime, Episode, ProviderId},
     provider::{Registry, bounded, http::web_url},
     store::{Config, Library, Progress, Store},
+    sync::{self, Account},
 };
 use anyhow::bail;
 use std::{
@@ -58,7 +58,6 @@ pub struct AppSettings {
     pub animeworld_url: String,
     pub animeunity_url: String,
     pub streamingcommunity_url: String,
-    pub anilist_client_id: u32,
 }
 impl From<&Config> for AppSettings {
     fn from(c: &Config) -> Self {
@@ -67,7 +66,6 @@ impl From<&Config> for AppSettings {
             animeworld_url: c.animeworld_url.clone(),
             animeunity_url: c.animeunity_url.clone(),
             streamingcommunity_url: c.streamingcommunity_url.clone(),
-            anilist_client_id: c.anilist_client_id,
         }
     }
 }
@@ -79,7 +77,6 @@ pub struct AnimeLib {
     library: Mutex<Library>,
     settings: Mutex<Config>,
     store: Option<Store>,
-    anilist: anilist::Client,
     account: Mutex<()>,
 }
 #[uniffi::export]
@@ -266,6 +263,10 @@ impl AnimeLib {
         ))
     }
     pub fn save_settings(&self, settings: AppSettings) -> ApiResult<()> {
+        let _account = self
+            .account
+            .lock()
+            .map_err(|_| anyhow::anyhow!("account lock"))?;
         for raw in [
             &settings.animeworld_url,
             &settings.animeunity_url,
@@ -284,7 +285,6 @@ impl AnimeLib {
         next.animeworld_url = settings.animeworld_url;
         next.animeunity_url = settings.animeunity_url;
         next.streamingcommunity_url = settings.streamingcommunity_url;
-        next.anilist_client_id = settings.anilist_client_id;
         let registry = Registry::new(&next, self.store.as_ref().map(|s| s.dir.as_path()))?;
         if let Some(store) = &self.store {
             store.save_config(&next)?;
@@ -309,156 +309,89 @@ impl AnimeLib {
                 }
             }))))
     }
-    /// Metadata is optional and never blocks browsing/playback when AniList is down.
-    pub fn metadata(&self, anime: &Anime) -> ApiResult<Anime> {
-        let mut anime = anime.clone();
-        if !self.is_private()
-            && let Some(entry) = self.runtime.block_on(self.anilist.lookup(&anime))?
-        {
-            if !entry.plain_description().is_empty() {
-                anime.synopsis = entry.plain_description();
-            }
-            if !entry.display_score().is_empty() {
-                anime.score = entry.display_score();
-            }
-            anime.genres = entry.genres.clone();
-            anime.status = entry.display_status();
-            if let Some(count) = entry.episodes {
-                anime.episodes = anime.episodes.max(count);
-            }
-            if anime.cover_url.is_empty() {
-                anime.cover_url = entry
-                    .cover_image
-                    .and_then(|c| c.extra_large)
-                    .unwrap_or_default();
-            }
-        }
-        Ok(anime)
+    pub fn telegram_status(&self) -> ApiResult<String> {
+        Ok(match &self.store {
+            Some(store) => Account::load(&store.dir)?
+                .map(|a| a.label())
+                .unwrap_or_default(),
+            None => String::new(),
+        })
     }
-    pub fn anilist_user(&self) -> String {
-        self.anilist.user().unwrap_or_default()
-    }
-    pub fn anilist_authorize_url(&self) -> ApiResult<String> {
-        let id = self.settings()?.anilist_client_id;
-        if id == 0 {
-            return Err(anyhow::anyhow!("Enter your AniList OAuth client ID first").into());
-        }
-        Ok(anilist::authorize_url(id))
-    }
-    /// Verify a user-supplied token/redirect URL before persisting it in app-private storage.
-    pub fn anilist_login(&self, token: String) -> ApiResult<String> {
+    /// First device: bot token after /start. Other devices: the secret alib1 connection key.
+    pub fn telegram_connect(&self, credential: String, chat_id: String) -> ApiResult<String> {
         let _guard = self
             .account
             .lock()
             .map_err(|_| anyhow::anyhow!("account lock"))?;
-        if self.is_private() {
-            return Err(anyhow::anyhow!("Disable private mode before logging in").into());
+        let store = self.sync_store()?;
+        if Account::load(&store.dir)?.is_some() {
+            return Err(anyhow::anyhow!("Disconnect the current bot first").into());
         }
-        let token = token.trim();
-        let token = if token.starts_with("https://") {
-            let url = url::Url::parse(token).map_err(anyhow::Error::from)?;
-            url::form_urlencoded::parse(url.fragment().unwrap_or_default().as_bytes())
-                .find(|(key, _)| key == "access_token")
-                .map(|(_, value)| value.into_owned())
-                .ok_or_else(|| anyhow::anyhow!("Redirect URL has no access_token"))?
-        } else {
-            token.to_owned()
-        };
-        if token.is_empty() || token.len() > 16384 || token.chars().any(char::is_whitespace) {
-            return Err(anyhow::anyhow!("Invalid token").into());
-        }
-        let client = anilist::Client::with_token(token.clone())?;
-        let user = self.runtime.block_on(client.viewer())?;
+        let account = self
+            .runtime
+            .block_on(sync::Client::connect(&credential, &chat_id))?;
+        // Save the encryption key before any remote upload. A network failure cannot lose it.
+        account.save(&store.dir)?;
+        Ok(account.connection_key()?)
+    }
+    pub fn telegram_connection_key(&self) -> ApiResult<String> {
+        let _guard = self
+            .account
+            .lock()
+            .map_err(|_| anyhow::anyhow!("account lock"))?;
         let store = self
             .store
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("A persistent library is required for login"))?;
-        anilist::Token {
-            user: user.clone(),
-            token: token.clone(),
-            stored: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-        }
-        .save(&store.dir)?;
-        self.anilist.adopt(token, user.clone());
-        Ok(user)
+            .ok_or_else(|| anyhow::anyhow!("No persistent library"))?;
+        Ok(Account::load(&store.dir)?
+            .ok_or_else(|| anyhow::anyhow!("Connect a bot first"))?
+            .connection_key()?)
     }
-    pub fn anilist_logout(&self) -> ApiResult<()> {
+    pub fn telegram_disconnect(&self) -> ApiResult<()> {
         let _guard = self
             .account
             .lock()
             .map_err(|_| anyhow::anyhow!("account lock"))?;
         if let Some(store) = &self.store {
-            match std::fs::remove_file(anilist::Token::path(&store.dir)) {
-                Ok(()) => (),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-                Err(e) => return Err(anyhow::Error::from(e).into()),
-            }
+            Account::remove(&store.dir)?;
         }
-        self.anilist.logout();
         Ok(())
     }
-    pub fn sync_watchlist(&self, anime: &Anime, added: bool) -> ApiResult<String> {
-        self.track(anime, TrackEvent::Watchlist { added })
-    }
-    pub fn sync_watched(&self, anime: &Anime, episode: &Episode) -> ApiResult<String> {
-        self.track(
-            anime,
-            TrackEvent::Watched {
-                number: episode.number.clone(),
-                total: anime.episodes,
-            },
-        )
-    }
-    pub fn anilist_sync(&self) -> ApiResult<Vec<String>> {
-        let library = self.view(Clone::clone)?;
-        let mut results = Vec::new();
-        self.check_sync()?;
-        for anime in &library.watchlist {
-            results.push(match self.sync_watchlist(anime, true) {
-                Ok(m) => m,
-                Err(e) => e.to_string(),
-            });
-        }
-        for entry in &library.history {
-            if let Some(p) = entry
-                .progress
-                .values()
-                .filter(|p| p.completed)
-                .max_by(|a, b| {
-                    a.episode
-                        .number
-                        .parse::<f64>()
-                        .unwrap_or(0.0)
-                        .total_cmp(&b.episode.number.parse::<f64>().unwrap_or(0.0))
-                })
-            {
-                results.push(match self.sync_watched(&entry.anime, &p.episode) {
-                    Ok(m) => m,
-                    Err(e) => e.to_string(),
-                });
-            }
-        }
-        Ok(results)
+    pub fn telegram_sync(&self) -> ApiResult<()> {
+        let _guard = self
+            .account
+            .lock()
+            .map_err(|_| anyhow::anyhow!("account lock"))?;
+        let store = self.sync_store()?;
+        let mut account = Account::load(&store.dir)?
+            .ok_or_else(|| anyhow::anyhow!("Connect your Telegram bot first"))?;
+        let captured = self.view(Clone::clone)?;
+        let outcome = self
+            .runtime
+            .block_on(sync::Client::new(account.clone())?.sync(&captured))?;
+        // Merge with edits made during the network request; save checkpoint and data together.
+        let mut library = self
+            .library
+            .lock()
+            .map_err(|_| anyhow::anyhow!("library lock"))?;
+        let mut next = library.clone();
+        outcome.apply(&mut next)?;
+        store.save(&next)?;
+        *library = next;
+        account.mark_initialized();
+        account.save(&store.dir)?;
+        Ok(())
     }
 }
 impl AnimeLib {
     fn build(dir: Option<PathBuf>) -> ApiResult<Self> {
-        let (store, config, library, anilist) = if let Some(dir) = dir {
+        let (store, config, library) = if let Some(dir) = dir {
             let store = Store::open(Some(dir))?;
-            let client = anilist::Client::open(&store.dir)?;
             let config = store.config.clone();
             let library = store.library.clone();
-            (Some(store), config, library, client)
+            (Some(store), config, library)
         } else {
-            (
-                None,
-                Config::default(),
-                Library::default(),
-                anilist::Client::anonymous()?,
-            )
+            (None, Config::default(), Library::default())
         };
         let registry = Registry::new(&config, store.as_ref().map(|s| s.dir.as_path()))?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -471,7 +404,6 @@ impl AnimeLib {
             library: Mutex::new(library),
             settings: Mutex::new(config),
             store,
-            anilist,
             account: Mutex::new(()),
         })
     }
@@ -504,18 +436,13 @@ impl AnimeLib {
         *library = next;
         Ok(result)
     }
-    fn check_sync(&self) -> ApiResult<()> {
+    fn sync_store(&self) -> ApiResult<&Store> {
         if self.is_private() {
-            return Err(anyhow::anyhow!("AniList is disabled in private mode").into());
+            return Err(anyhow::anyhow!("Sync is disabled in private mode").into());
         }
-        if !self.anilist.logged_in() {
-            return Err(anyhow::anyhow!("Connect AniList in Settings first").into());
-        }
-        Ok(())
-    }
-    fn track(&self, anime: &Anime, event: TrackEvent) -> ApiResult<String> {
-        self.check_sync()?;
-        Ok(self.runtime.block_on(self.anilist.track(anime, event))?)
+        self.store
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("A persistent library is required for sync").into())
     }
 }
 
@@ -586,7 +513,7 @@ mod tests {
         assert!(lib.progress(&anime(), &episode("2"))?.is_none());
         lib.mark_watched(&anime(), &episode("1"), false)?;
         assert!(lib.watched_episodes(&anime())?.is_empty());
-        assert!(lib.anilist_sync().is_err());
+        assert!(lib.telegram_sync().is_err());
         Ok(())
     }
     #[test]
@@ -604,6 +531,25 @@ mod tests {
         value.as_object_mut().expect("record").remove("cover_url");
         let saved: Anime = serde_json::from_value(value)?;
         assert!(saved.cover_url.is_empty());
+        Ok(())
+    }
+    #[test]
+    fn telegram_requires_persistence_and_is_disabled_in_private_mode() -> Result<()> {
+        let lib = AnimeLib::new()?;
+        assert!(lib.telegram_status()?.is_empty());
+        assert!(lib.telegram_sync().is_err());
+        assert!(
+            lib.telegram_connect("not-a-token".into(), String::new())
+                .is_err()
+        );
+        let mut settings = lib.settings()?;
+        settings.private_mode = true;
+        lib.save_settings(settings)?;
+        let error = lib
+            .telegram_connect("not-a-token".into(), String::new())
+            .expect_err("private mode");
+        assert!(error.to_string().contains("private mode"));
+        lib.telegram_disconnect()?;
         Ok(())
     }
     #[test]

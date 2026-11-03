@@ -7,8 +7,9 @@
 package dev.keewee.animelevisione
 
 import android.Manifest
-import android.content.Intent
-import android.net.Uri
+import android.app.Activity
+import android.content.ContextWrapper
+import android.view.WindowManager
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -26,6 +27,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -49,21 +53,53 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.SecureFlagPolicy
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.exoplayer.offline.Download
 import coil.compose.AsyncImage
-import kotlinx.coroutines.launch
 import uniffi.anime_levisione_core.*
 
 @Composable
 fun LevisioneApp(vm: CatalogViewModel = viewModel()) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, vm) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) vm.setSyncForeground(true)
+            if (event == Lifecycle.Event.ON_STOP) vm.setSyncForeground(false)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        vm.setSyncForeground(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            vm.setSyncForeground(false)
+        }
+    }
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(vm.message) {
         vm.message?.let { message ->
             vm.message = null
             snackbar.showSnackbar(message.take(500))
         }
+    }
+    vm.connectionKey?.let { key ->
+        ProtectCredentials()
+        AlertDialog(
+            onDismissRequest = { vm.connectionKey = null },
+            title = { Text("Secret connection key") },
+            properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text("Save privately and paste on your other devices. This key grants access to your bot and library. Never post it in the bot chat.")
+                    SelectionContainer { Text(key, modifier = Modifier.padding(top = 12.dp)) }
+                }
+            },
+            confirmButton = { TextButton(onClick = { vm.connectionKey = null }) { Text("Close and hide") } },
+        )
     }
     val playing = vm.playback
     if (playing != null) {
@@ -932,11 +968,24 @@ private fun DownloadsScreen(vm: CatalogViewModel) {
 }
 
 @Composable
+private fun ProtectCredentials() {
+    val context = LocalContext.current
+    val window = remember(context) {
+        generateSequence(context) { (it as? ContextWrapper)?.baseContext }
+            .filterIsInstance<Activity>().firstOrNull()?.window
+    }
+    DisposableEffect(window) {
+        val wasSecure = ((window?.attributes?.flags ?: 0) and WindowManager.LayoutParams.FLAG_SECURE) != 0
+        window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        onDispose { if (!wasSecure) window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
+    }
+}
+
+@Composable
 private fun SettingsScreen(vm: CatalogViewModel) {
     val settings = vm.settings
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     var token by remember { mutableStateOf("") }
+    var chatId by remember { mutableStateOf("") }
     var loginDialog by remember { mutableStateOf(false) }
     var mirrors by remember { mutableStateOf(false) }
     LazyColumn(
@@ -949,7 +998,7 @@ private fun SettingsScreen(vm: CatalogViewModel) {
         item {
             PreferenceSwitch(
                 "Private viewing",
-                "Don’t record progress/searches or contact AniList.",
+                "Don’t record progress/searches or sync with Telegram.",
                 settings?.privateMode == true,
                 settings != null,
             ) {
@@ -995,7 +1044,7 @@ private fun SettingsScreen(vm: CatalogViewModel) {
         item {
             HorizontalDivider(color = Panel)
             Text(
-                "AniList",
+                "Personal Telegram sync",
                 fontSize = 22.sp,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(top = 18.dp),
@@ -1005,70 +1054,17 @@ private fun SettingsScreen(vm: CatalogViewModel) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
                     if (vm.user.isBlank())
-                        "Connect your profile to sync My List and watched episodes."
-                    else "Connected as ${vm.user}",
+                        "Use your own bot to sync My List, watched episodes and resume points. No app account or shared server."
+                    else vm.user,
                     color = Muted,
                 )
                 if (vm.user.isBlank()) {
-                    var clientId by
-                        remember(settings?.anilistClientId) {
-                            mutableStateOf(
-                                settings?.anilistClientId?.takeIf { it > 0u }?.toString().orEmpty()
-                            )
-                        }
-                    OutlinedTextField(
-                        clientId,
-                        { clientId = it.filter(Char::isDigit).take(10) },
-                        label = { Text("Your AniList OAuth client ID") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    TextButton(
-                        onClick = {
-                            context.startActivity(
-                                Intent(
-                                    Intent.ACTION_VIEW,
-                                    Uri.parse("https://anilist.co/settings/developer"),
-                                )
-                            )
-                        }
-                    ) {
-                        Text("Create an AniList client")
-                    }
-                    Button(
-                        onClick = {
-                            settings?.let {
-                                vm.saveSettings(
-                                    it.copy(anilistClientId = clientId.toUIntOrNull() ?: 0u)
-                                )
-                            }
-                        },
-                        enabled = settings != null && clientId.toUIntOrNull() != null,
-                    ) {
-                        Text("Save client ID")
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            scope.launch {
-                                try {
-                                    context.startActivity(
-                                        Intent(Intent.ACTION_VIEW, Uri.parse(vm.authorizeUrl()))
-                                    )
-                                } catch (e: Exception) {
-                                    vm.message = e.message
-                                }
-                            }
-                        },
-                        enabled =
-                            (settings?.anilistClientId ?: 0u) > 0u && settings?.privateMode == false,
-                    ) {
-                        Text("Authorize in browser")
-                    }
+                    Text("Create a dedicated bot with @BotFather, then open that bot and send /start. For another device, use the secret connection key from the first device.", color = Muted)
                     OutlinedButton(
                         onClick = { loginDialog = true },
                         enabled = settings?.privateMode == false && !vm.accountBusy,
                     ) {
-                        Text("Paste token / redirect URL")
+                        Text("Connect bot / another device")
                     }
                 } else
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1082,6 +1078,12 @@ private fun SettingsScreen(vm: CatalogViewModel) {
                             Text("Disconnect")
                         }
                     }
+                if (vm.user.isNotBlank()) {
+                    TextButton(onClick = { vm.showConnectionKey() }, enabled = !vm.accountBusy) {
+                        Text("Show secret connection key")
+                    }
+                    Text("Sync runs while the app is open. Keep the encrypted library document pinned in your bot chat.", color = Muted, fontSize = 12.sp)
+                }
                 if (vm.accountBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
             }
         }
@@ -1114,39 +1116,47 @@ private fun SettingsScreen(vm: CatalogViewModel) {
         }
         item {
             Text(
-                "anime-levisione • GPL-3.0\nYour library and downloads are stored privately on this device. Removing the app removes them.",
+                "anime-levisione • GPL-3.0\nDownloads stay on this device. Optional Telegram sync stores an encrypted copy of lists and progress in your personal bot chat.",
                 color = Muted,
                 fontSize = 12.sp,
             )
         }
     }
+    if (loginDialog) ProtectCredentials()
     if (loginDialog)
         AlertDialog(
             onDismissRequest = {
                 loginDialog = false
                 token = ""
             },
-            title = { Text("Connect AniList") },
+            title = { Text("Connect your Telegram bot") },
+            properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
             text = {
                 Column {
                     Text(
-                        "Paste the token or full redirect URL from your authorization page. It stays in app-private storage.",
+                        "First device: paste your dedicated bot token after sending /start. Other devices: paste the secret alib1 connection key. Credentials stay in app-private storage.",
                         color = Muted,
                     )
                     OutlinedTextField(
                         token,
-                        { token = it.take(16384) },
+                        { token = it.take(4096) },
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        label = { Text("Token or redirect URL") },
+                        label = { Text("Bot token or connection key") },
                         modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        chatId,
+                        { chatId = it.filter(Char::isDigit).take(20) },
+                        label = { Text("Private Chat ID (optional)") },
+                        singleLine = true,
                     )
                 }
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        vm.login(token)
+                        vm.login(token, chatId)
                         token = ""
                         loginDialog = false
                     },
