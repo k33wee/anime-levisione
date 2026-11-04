@@ -989,6 +989,7 @@ private fun SettingsScreen(vm: CatalogViewModel) {
     var loginDialog by remember { mutableStateOf(false) }
     var mirrors by remember { mutableStateOf(false) }
     LazyColumn(
+        modifier = Modifier.testTag("settingsList"),
         contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {

@@ -13,7 +13,9 @@ import android.os.Build
 import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
@@ -126,11 +128,25 @@ class AndroidSmokeTest {
     @Test
     fun personalBotSettingsAndConnectionKeyAreProtected() {
         val vm = ViewModelProvider(compose.activity)[CatalogViewModel::class.java]
+        // Exercise lazy item discovery even when the host emulator has a large display.
+        compose.runOnUiThread {
+            compose.activity.setContent {
+                LevisioneTheme {
+                    Box(Modifier.widthIn(max = 320.dp).heightIn(max = 560.dp)) {
+                        LevisioneApp(vm)
+                    }
+                }
+            }
+        }
         compose.waitUntil(20_000) { vm.settings != null }
         compose.onNodeWithTag("navSettings").performClick()
-        compose.onNodeWithText("Personal Telegram sync").performScrollTo().assertIsDisplayed()
+        // Small CI screens have not composed the lower LazyColumn items yet.
+        val settings = compose.onNodeWithTag("settingsList")
+        settings.performScrollToNode(hasText("Personal Telegram sync"))
+        compose.onNodeWithText("Personal Telegram sync").assertIsDisplayed()
         compose.onNodeWithText("AniList").assertDoesNotExist()
-        compose.onNodeWithText("Connect bot / another device").performScrollTo().performClick()
+        settings.performScrollToNode(hasText("Connect bot / another device"))
+        compose.onNodeWithText("Connect bot / another device").performClick()
         compose.onNodeWithText("Connect your Telegram bot").assertIsDisplayed()
         compose.runOnIdle {
             assertTrue((compose.activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE) != 0)
