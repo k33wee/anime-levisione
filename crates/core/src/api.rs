@@ -19,6 +19,9 @@ pub enum ApiError {
 }
 impl From<anyhow::Error> for ApiError {
     fn from(error: anyhow::Error) -> Self {
+        crate::diagnostics::record(crate::diagnostics::DiagnosticEvent::CoreFailure {
+            kind: crate::diagnostics::failure(&error),
+        });
         Self::Failure {
             message: format!("{error:#}"),
         }

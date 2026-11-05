@@ -165,6 +165,17 @@ class AndroidSmokeTest {
     }
 
     @Test
+    fun diagnosticExportRequiresExplicitConfirmation() {
+        compose.onNodeWithTag("navSettings").performClick()
+        compose.onNodeWithTag("settingsList").performScrollToNode(hasText("Export diagnostic logs"))
+        compose.onNodeWithTag("exportDiagnostics").performClick()
+        compose.onNodeWithText("Share diagnostic logs?").assertIsDisplayed()
+        compose.onNodeWithText("Choose app").assertIsDisplayed()
+        compose.onNodeWithText("Cancel").performClick()
+        compose.onNodeWithText("Share diagnostic logs?").assertDoesNotExist()
+    }
+
+    @Test
     fun launcherIconAndApplicationLabelUseTheNewBrand() {
         val activity = compose.activity
         assertEquals(
@@ -274,6 +285,16 @@ class AndroidSmokeTest {
             compose.onAllNodesWithText("Choose audio").fetchSemanticsNodes().isEmpty()
         }
         compose.activity.runOnUiThread { compose.activity.setContent { Text("Done") } }
+        compose.waitForIdle()
+        val intent = runBlocking { DiagnosticLogs.shareIntent(compose.activity) }
+        @Suppress("DEPRECATION")
+        val uri = intent.getParcelableExtra<Uri>(android.content.Intent.EXTRA_STREAM)!!
+        val logs = compose.activity.contentResolver.openInputStream(uri)!!.bufferedReader().use { it.readText() }
+        assertTrue(logs.contains("player_opened"))
+        assertTrue(logs.contains("player_ready"))
+        assertTrue(logs.contains("player_closed"))
+        assertFalse(logs.contains("Regression Fixture"))
+        assertFalse(logs.contains(file.name))
         file.delete()
     }
 

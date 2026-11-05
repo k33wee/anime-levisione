@@ -10,6 +10,7 @@ class AnimeApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         System.loadLibrary("anime_levisione_core")
+        DiagnosticLogs.initialize(this)
         // Rustls needs the application context/class loader before HTTPS requests.
         initialize(this)
     }

@@ -764,6 +764,12 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -779,7 +785,13 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 // when the library is loaded.
 internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
-    fun uniffi_anime_levisione_core_checksum_method_animelib_continue_watching(
+    fun uniffi_anime_levisione_core_checksum_func_diagnostics_initialize(
+): Short
+fun uniffi_anime_levisione_core_checksum_func_diagnostics_record(
+): Short
+fun uniffi_anime_levisione_core_checksum_func_diagnostics_snapshot(
+): Short
+fun uniffi_anime_levisione_core_checksum_method_animelib_continue_watching(
 ): Short
 fun uniffi_anime_levisione_core_checksum_method_animelib_details(
 ): Short
@@ -928,6 +940,12 @@ fun uniffi_anime_levisione_core_fn_method_animelib_watched_episodes(`ptr`: Point
 ): RustBuffer.ByValue
 fun uniffi_anime_levisione_core_fn_method_animelib_watchlist(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_anime_levisione_core_fn_func_diagnostics_initialize(`directory`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_anime_levisione_core_fn_func_diagnostics_record(`event`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_anime_levisione_core_fn_func_diagnostics_snapshot(uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun ffi_anime_levisione_core_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun ffi_anime_levisione_core_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1054,6 +1072,15 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if (lib.uniffi_anime_levisione_core_checksum_func_diagnostics_initialize() != 31845.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_anime_levisione_core_checksum_func_diagnostics_record() != 65456.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_anime_levisione_core_checksum_func_diagnostics_snapshot() != 56213.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_anime_levisione_core_checksum_method_animelib_continue_watching() != 35338.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1272,6 +1299,29 @@ private class AndroidSystemCleanable(
 /**
  * @suppress
  */
+public object FfiConverterUShort: FfiConverter<UShort, Short> {
+    override fun lift(value: Short): UShort {
+        return value.toUShort()
+    }
+
+    override fun read(buf: ByteBuffer): UShort {
+        return lift(buf.getShort())
+    }
+
+    override fun lower(value: UShort): Short {
+        return value.toShort()
+    }
+
+    override fun allocationSize(value: UShort) = 2UL
+
+    override fun write(value: UShort, buf: ByteBuffer) {
+        buf.putShort(value.toShort())
+    }
+}
+
+/**
+ * @suppress
+ */
 public object FfiConverterUInt: FfiConverter<UInt, Int> {
     override fun lift(value: Int): UInt {
         return value.toUInt()
@@ -1289,6 +1339,52 @@ public object FfiConverterUInt: FfiConverter<UInt, Int> {
 
     override fun write(value: UInt, buf: ByteBuffer) {
         buf.putInt(value.toInt())
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterInt: FfiConverter<Int, Int> {
+    override fun lift(value: Int): Int {
+        return value
+    }
+
+    override fun read(buf: ByteBuffer): Int {
+        return buf.getInt()
+    }
+
+    override fun lower(value: Int): Int {
+        return value
+    }
+
+    override fun allocationSize(value: Int) = 4UL
+
+    override fun write(value: Int, buf: ByteBuffer) {
+        buf.putInt(value)
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterULong: FfiConverter<ULong, Long> {
+    override fun lift(value: Long): ULong {
+        return value.toULong()
+    }
+
+    override fun read(buf: ByteBuffer): ULong {
+        return lift(buf.getLong())
+    }
+
+    override fun lower(value: ULong): Long {
+        return value.toLong()
+    }
+
+    override fun allocationSize(value: ULong) = 8UL
+
+    override fun write(value: ULong, buf: ByteBuffer) {
+        buf.putLong(value.toLong())
     }
 }
 
@@ -2288,6 +2384,689 @@ public object FfiConverterTypeApiError : FfiConverterRustBuffer<ApiException> {
 
 
 
+enum class DiagnosticComponent {
+    
+    UI,
+    PROVIDER,
+    AUDIO,
+    STORE,
+    SYNC,
+    PLAYBACK,
+    CATALOG,
+    REPOSITORY,
+    OFFLINE,
+    MAIN,
+    DIAGNOSTICS,
+    OTHER;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDiagnosticComponent: FfiConverterRustBuffer<DiagnosticComponent> {
+    override fun read(buf: ByteBuffer) = try {
+        DiagnosticComponent.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: DiagnosticComponent) = 4UL
+
+    override fun write(value: DiagnosticComponent, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * Only fixed enums, booleans and technical counters cross this privacy boundary.
+ */
+sealed class DiagnosticEvent {
+    
+    object SessionStarted : DiagnosticEvent()
+    
+    
+    object SessionEnded : DiagnosticEvent()
+    
+    
+    data class Panic(
+        val `component`: DiagnosticComponent, 
+        val `line`: kotlin.UInt) : DiagnosticEvent() {
+        companion object
+    }
+    
+    data class AndroidEnvironment(
+        val `api`: kotlin.UInt) : DiagnosticEvent() {
+        companion object
+    }
+    
+    data class AndroidCrash(
+        val `kind`: DiagnosticFailure) : DiagnosticEvent() {
+        companion object
+    }
+    
+    data class AndroidCrashFrame(
+        val `component`: DiagnosticComponent, 
+        val `line`: kotlin.UInt) : DiagnosticEvent() {
+        companion object
+    }
+    
+    data class OperationStarted(
+        val `id`: kotlin.ULong, 
+        val `operation`: DiagnosticOperation, 
+        val `provider`: ProviderId?) : DiagnosticEvent() {
+        companion object
+    }
+    
+    data class OperationFinished(
+        val `id`: kotlin.ULong, 
+        val `outcome`: DiagnosticOutcome, 
+        val `elapsedMs`: kotlin.ULong, 
+        val `failure`: DiagnosticFailure?) : DiagnosticEvent() {
+        companion object
+    }
+    
+    data class HttpResponse(
+        val `id`: kotlin.ULong, 
+        val `provider`: ProviderId?, 
+        val `attempt`: kotlin.UInt, 
+        val `status`: kotlin.UShort, 
+        val `elapsedMs`: kotlin.ULong, 
+        val `retry`: kotlin.Boolean) : DiagnosticEvent() {
+        companion object
+    }
+    
+    data class HttpFailure(
+        val `id`: kotlin.ULong, 
+        val `provider`: ProviderId?, 
+        val `attempt`: kotlin.UInt, 
+        val `kind`: DiagnosticFailure, 
+        val `elapsedMs`: kotlin.ULong, 
+        val `retry`: kotlin.Boolean) : DiagnosticEvent() {
+        companion object
+    }
+    
+    object ProviderDeadline : DiagnosticEvent()
+    
+    
+    data class CoreFailure(
+        val `kind`: DiagnosticFailure) : DiagnosticEvent() {
+        companion object
+    }
+    
+    data class PlayerOpened(
+        val `session`: kotlin.ULong) : DiagnosticEvent() {
+        companion object
+    }
+    
+    data class PlayerClosed(
+        val `session`: kotlin.ULong) : DiagnosticEvent() {
+        companion object
+    }
+    
+    data class PlayerProcessExit(
+        val `session`: kotlin.ULong, 
+        val `code`: kotlin.Int?, 
+        val `success`: kotlin.Boolean) : DiagnosticEvent() {
+        companion object
+    }
+    
+    data class PlayerBuffering(
+        val `session`: kotlin.ULong, 
+        val `bufferedMs`: kotlin.ULong) : DiagnosticEvent() {
+        companion object
+    }
+    
+    data class PlayerReady(
+        val `session`: kotlin.ULong, 
+        val `stallMs`: kotlin.ULong) : DiagnosticEvent() {
+        companion object
+    }
+    
+    data class PlayerFailure(
+        val `session`: kotlin.ULong, 
+        val `code`: kotlin.UInt, 
+        val `kind`: DiagnosticFailure) : DiagnosticEvent() {
+        companion object
+    }
+    
+    data class MediaLoadFailure(
+        val `session`: kotlin.ULong, 
+        val `status`: kotlin.UShort, 
+        val `kind`: DiagnosticFailure, 
+        val `cancelled`: kotlin.Boolean) : DiagnosticEvent() {
+        companion object
+    }
+    
+    data class Bandwidth(
+        val `session`: kotlin.ULong, 
+        val `bitsPerSecond`: kotlin.ULong) : DiagnosticEvent() {
+        companion object
+    }
+    
+    object ExportRequested : DiagnosticEvent()
+    
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDiagnosticEvent : FfiConverterRustBuffer<DiagnosticEvent>{
+    override fun read(buf: ByteBuffer): DiagnosticEvent {
+        return when(buf.getInt()) {
+            1 -> DiagnosticEvent.SessionStarted
+            2 -> DiagnosticEvent.SessionEnded
+            3 -> DiagnosticEvent.Panic(
+                FfiConverterTypeDiagnosticComponent.read(buf),
+                FfiConverterUInt.read(buf),
+                )
+            4 -> DiagnosticEvent.AndroidEnvironment(
+                FfiConverterUInt.read(buf),
+                )
+            5 -> DiagnosticEvent.AndroidCrash(
+                FfiConverterTypeDiagnosticFailure.read(buf),
+                )
+            6 -> DiagnosticEvent.AndroidCrashFrame(
+                FfiConverterTypeDiagnosticComponent.read(buf),
+                FfiConverterUInt.read(buf),
+                )
+            7 -> DiagnosticEvent.OperationStarted(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeDiagnosticOperation.read(buf),
+                FfiConverterOptionalTypeProviderId.read(buf),
+                )
+            8 -> DiagnosticEvent.OperationFinished(
+                FfiConverterULong.read(buf),
+                FfiConverterTypeDiagnosticOutcome.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterOptionalTypeDiagnosticFailure.read(buf),
+                )
+            9 -> DiagnosticEvent.HttpResponse(
+                FfiConverterULong.read(buf),
+                FfiConverterOptionalTypeProviderId.read(buf),
+                FfiConverterUInt.read(buf),
+                FfiConverterUShort.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterBoolean.read(buf),
+                )
+            10 -> DiagnosticEvent.HttpFailure(
+                FfiConverterULong.read(buf),
+                FfiConverterOptionalTypeProviderId.read(buf),
+                FfiConverterUInt.read(buf),
+                FfiConverterTypeDiagnosticFailure.read(buf),
+                FfiConverterULong.read(buf),
+                FfiConverterBoolean.read(buf),
+                )
+            11 -> DiagnosticEvent.ProviderDeadline
+            12 -> DiagnosticEvent.CoreFailure(
+                FfiConverterTypeDiagnosticFailure.read(buf),
+                )
+            13 -> DiagnosticEvent.PlayerOpened(
+                FfiConverterULong.read(buf),
+                )
+            14 -> DiagnosticEvent.PlayerClosed(
+                FfiConverterULong.read(buf),
+                )
+            15 -> DiagnosticEvent.PlayerProcessExit(
+                FfiConverterULong.read(buf),
+                FfiConverterOptionalInt.read(buf),
+                FfiConverterBoolean.read(buf),
+                )
+            16 -> DiagnosticEvent.PlayerBuffering(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            17 -> DiagnosticEvent.PlayerReady(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            18 -> DiagnosticEvent.PlayerFailure(
+                FfiConverterULong.read(buf),
+                FfiConverterUInt.read(buf),
+                FfiConverterTypeDiagnosticFailure.read(buf),
+                )
+            19 -> DiagnosticEvent.MediaLoadFailure(
+                FfiConverterULong.read(buf),
+                FfiConverterUShort.read(buf),
+                FfiConverterTypeDiagnosticFailure.read(buf),
+                FfiConverterBoolean.read(buf),
+                )
+            20 -> DiagnosticEvent.Bandwidth(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            21 -> DiagnosticEvent.ExportRequested
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: DiagnosticEvent) = when(value) {
+        is DiagnosticEvent.SessionStarted -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DiagnosticEvent.SessionEnded -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DiagnosticEvent.Panic -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeDiagnosticComponent.allocationSize(value.`component`)
+                + FfiConverterUInt.allocationSize(value.`line`)
+            )
+        }
+        is DiagnosticEvent.AndroidEnvironment -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterUInt.allocationSize(value.`api`)
+            )
+        }
+        is DiagnosticEvent.AndroidCrash -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeDiagnosticFailure.allocationSize(value.`kind`)
+            )
+        }
+        is DiagnosticEvent.AndroidCrashFrame -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeDiagnosticComponent.allocationSize(value.`component`)
+                + FfiConverterUInt.allocationSize(value.`line`)
+            )
+        }
+        is DiagnosticEvent.OperationStarted -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeDiagnosticOperation.allocationSize(value.`operation`)
+                + FfiConverterOptionalTypeProviderId.allocationSize(value.`provider`)
+            )
+        }
+        is DiagnosticEvent.OperationFinished -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterTypeDiagnosticOutcome.allocationSize(value.`outcome`)
+                + FfiConverterULong.allocationSize(value.`elapsedMs`)
+                + FfiConverterOptionalTypeDiagnosticFailure.allocationSize(value.`failure`)
+            )
+        }
+        is DiagnosticEvent.HttpResponse -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterOptionalTypeProviderId.allocationSize(value.`provider`)
+                + FfiConverterUInt.allocationSize(value.`attempt`)
+                + FfiConverterUShort.allocationSize(value.`status`)
+                + FfiConverterULong.allocationSize(value.`elapsedMs`)
+                + FfiConverterBoolean.allocationSize(value.`retry`)
+            )
+        }
+        is DiagnosticEvent.HttpFailure -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterOptionalTypeProviderId.allocationSize(value.`provider`)
+                + FfiConverterUInt.allocationSize(value.`attempt`)
+                + FfiConverterTypeDiagnosticFailure.allocationSize(value.`kind`)
+                + FfiConverterULong.allocationSize(value.`elapsedMs`)
+                + FfiConverterBoolean.allocationSize(value.`retry`)
+            )
+        }
+        is DiagnosticEvent.ProviderDeadline -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DiagnosticEvent.CoreFailure -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeDiagnosticFailure.allocationSize(value.`kind`)
+            )
+        }
+        is DiagnosticEvent.PlayerOpened -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`session`)
+            )
+        }
+        is DiagnosticEvent.PlayerClosed -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`session`)
+            )
+        }
+        is DiagnosticEvent.PlayerProcessExit -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`session`)
+                + FfiConverterOptionalInt.allocationSize(value.`code`)
+                + FfiConverterBoolean.allocationSize(value.`success`)
+            )
+        }
+        is DiagnosticEvent.PlayerBuffering -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`session`)
+                + FfiConverterULong.allocationSize(value.`bufferedMs`)
+            )
+        }
+        is DiagnosticEvent.PlayerReady -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`session`)
+                + FfiConverterULong.allocationSize(value.`stallMs`)
+            )
+        }
+        is DiagnosticEvent.PlayerFailure -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`session`)
+                + FfiConverterUInt.allocationSize(value.`code`)
+                + FfiConverterTypeDiagnosticFailure.allocationSize(value.`kind`)
+            )
+        }
+        is DiagnosticEvent.MediaLoadFailure -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`session`)
+                + FfiConverterUShort.allocationSize(value.`status`)
+                + FfiConverterTypeDiagnosticFailure.allocationSize(value.`kind`)
+                + FfiConverterBoolean.allocationSize(value.`cancelled`)
+            )
+        }
+        is DiagnosticEvent.Bandwidth -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`session`)
+                + FfiConverterULong.allocationSize(value.`bitsPerSecond`)
+            )
+        }
+        is DiagnosticEvent.ExportRequested -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+    }
+
+    override fun write(value: DiagnosticEvent, buf: ByteBuffer) {
+        when(value) {
+            is DiagnosticEvent.SessionStarted -> {
+                buf.putInt(1)
+                Unit
+            }
+            is DiagnosticEvent.SessionEnded -> {
+                buf.putInt(2)
+                Unit
+            }
+            is DiagnosticEvent.Panic -> {
+                buf.putInt(3)
+                FfiConverterTypeDiagnosticComponent.write(value.`component`, buf)
+                FfiConverterUInt.write(value.`line`, buf)
+                Unit
+            }
+            is DiagnosticEvent.AndroidEnvironment -> {
+                buf.putInt(4)
+                FfiConverterUInt.write(value.`api`, buf)
+                Unit
+            }
+            is DiagnosticEvent.AndroidCrash -> {
+                buf.putInt(5)
+                FfiConverterTypeDiagnosticFailure.write(value.`kind`, buf)
+                Unit
+            }
+            is DiagnosticEvent.AndroidCrashFrame -> {
+                buf.putInt(6)
+                FfiConverterTypeDiagnosticComponent.write(value.`component`, buf)
+                FfiConverterUInt.write(value.`line`, buf)
+                Unit
+            }
+            is DiagnosticEvent.OperationStarted -> {
+                buf.putInt(7)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeDiagnosticOperation.write(value.`operation`, buf)
+                FfiConverterOptionalTypeProviderId.write(value.`provider`, buf)
+                Unit
+            }
+            is DiagnosticEvent.OperationFinished -> {
+                buf.putInt(8)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterTypeDiagnosticOutcome.write(value.`outcome`, buf)
+                FfiConverterULong.write(value.`elapsedMs`, buf)
+                FfiConverterOptionalTypeDiagnosticFailure.write(value.`failure`, buf)
+                Unit
+            }
+            is DiagnosticEvent.HttpResponse -> {
+                buf.putInt(9)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterOptionalTypeProviderId.write(value.`provider`, buf)
+                FfiConverterUInt.write(value.`attempt`, buf)
+                FfiConverterUShort.write(value.`status`, buf)
+                FfiConverterULong.write(value.`elapsedMs`, buf)
+                FfiConverterBoolean.write(value.`retry`, buf)
+                Unit
+            }
+            is DiagnosticEvent.HttpFailure -> {
+                buf.putInt(10)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterOptionalTypeProviderId.write(value.`provider`, buf)
+                FfiConverterUInt.write(value.`attempt`, buf)
+                FfiConverterTypeDiagnosticFailure.write(value.`kind`, buf)
+                FfiConverterULong.write(value.`elapsedMs`, buf)
+                FfiConverterBoolean.write(value.`retry`, buf)
+                Unit
+            }
+            is DiagnosticEvent.ProviderDeadline -> {
+                buf.putInt(11)
+                Unit
+            }
+            is DiagnosticEvent.CoreFailure -> {
+                buf.putInt(12)
+                FfiConverterTypeDiagnosticFailure.write(value.`kind`, buf)
+                Unit
+            }
+            is DiagnosticEvent.PlayerOpened -> {
+                buf.putInt(13)
+                FfiConverterULong.write(value.`session`, buf)
+                Unit
+            }
+            is DiagnosticEvent.PlayerClosed -> {
+                buf.putInt(14)
+                FfiConverterULong.write(value.`session`, buf)
+                Unit
+            }
+            is DiagnosticEvent.PlayerProcessExit -> {
+                buf.putInt(15)
+                FfiConverterULong.write(value.`session`, buf)
+                FfiConverterOptionalInt.write(value.`code`, buf)
+                FfiConverterBoolean.write(value.`success`, buf)
+                Unit
+            }
+            is DiagnosticEvent.PlayerBuffering -> {
+                buf.putInt(16)
+                FfiConverterULong.write(value.`session`, buf)
+                FfiConverterULong.write(value.`bufferedMs`, buf)
+                Unit
+            }
+            is DiagnosticEvent.PlayerReady -> {
+                buf.putInt(17)
+                FfiConverterULong.write(value.`session`, buf)
+                FfiConverterULong.write(value.`stallMs`, buf)
+                Unit
+            }
+            is DiagnosticEvent.PlayerFailure -> {
+                buf.putInt(18)
+                FfiConverterULong.write(value.`session`, buf)
+                FfiConverterUInt.write(value.`code`, buf)
+                FfiConverterTypeDiagnosticFailure.write(value.`kind`, buf)
+                Unit
+            }
+            is DiagnosticEvent.MediaLoadFailure -> {
+                buf.putInt(19)
+                FfiConverterULong.write(value.`session`, buf)
+                FfiConverterUShort.write(value.`status`, buf)
+                FfiConverterTypeDiagnosticFailure.write(value.`kind`, buf)
+                FfiConverterBoolean.write(value.`cancelled`, buf)
+                Unit
+            }
+            is DiagnosticEvent.Bandwidth -> {
+                buf.putInt(20)
+                FfiConverterULong.write(value.`session`, buf)
+                FfiConverterULong.write(value.`bitsPerSecond`, buf)
+                Unit
+            }
+            is DiagnosticEvent.ExportRequested -> {
+                buf.putInt(21)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+
+enum class DiagnosticFailure {
+    
+    TIMEOUT,
+    CONNECT,
+    HTTP,
+    IO,
+    DATA,
+    STATE,
+    ARGUMENT,
+    MEMORY,
+    SECURITY,
+    OTHER;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDiagnosticFailure: FfiConverterRustBuffer<DiagnosticFailure> {
+    override fun read(buf: ByteBuffer) = try {
+        DiagnosticFailure.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: DiagnosticFailure) = 4UL
+
+    override fun write(value: DiagnosticFailure, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+
+enum class DiagnosticOperation {
+    
+    CATALOG,
+    SEARCH,
+    EPISODES,
+    RESOLVE,
+    DOMAIN_PROBE,
+    AUDIO_PROBE,
+    PLAYBACK,
+    DOWNLOAD,
+    SYNC;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDiagnosticOperation: FfiConverterRustBuffer<DiagnosticOperation> {
+    override fun read(buf: ByteBuffer) = try {
+        DiagnosticOperation.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: DiagnosticOperation) = 4UL
+
+    override fun write(value: DiagnosticOperation, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+
+enum class DiagnosticOutcome {
+    
+    SUCCESS,
+    FAILED,
+    CANCELLED;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDiagnosticOutcome: FfiConverterRustBuffer<DiagnosticOutcome> {
+    override fun read(buf: ByteBuffer) = try {
+        DiagnosticOutcome.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: DiagnosticOutcome) = 4UL
+
+    override fun write(value: DiagnosticOutcome, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+
 enum class ProviderId {
     
     ANIME_WORLD,
@@ -2322,6 +3101,38 @@ public object FfiConverterTypeProviderId: FfiConverterRustBuffer<ProviderId> {
 /**
  * @suppress
  */
+public object FfiConverterOptionalInt: FfiConverterRustBuffer<kotlin.Int?> {
+    override fun read(buf: ByteBuffer): kotlin.Int? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterInt.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.Int?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterInt.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.Int?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterInt.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalTypeResumePoint: FfiConverterRustBuffer<ResumePoint?> {
     override fun read(buf: ByteBuffer): ResumePoint? {
         if (buf.get().toInt() == 0) {
@@ -2344,6 +3155,70 @@ public object FfiConverterOptionalTypeResumePoint: FfiConverterRustBuffer<Resume
         } else {
             buf.put(1)
             FfiConverterTypeResumePoint.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeDiagnosticFailure: FfiConverterRustBuffer<DiagnosticFailure?> {
+    override fun read(buf: ByteBuffer): DiagnosticFailure? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeDiagnosticFailure.read(buf)
+    }
+
+    override fun allocationSize(value: DiagnosticFailure?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeDiagnosticFailure.allocationSize(value)
+        }
+    }
+
+    override fun write(value: DiagnosticFailure?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeDiagnosticFailure.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeProviderId: FfiConverterRustBuffer<ProviderId?> {
+    override fun read(buf: ByteBuffer): ProviderId? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeProviderId.read(buf)
+    }
+
+    override fun allocationSize(value: ProviderId?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeProviderId.allocationSize(value)
+        }
+    }
+
+    override fun write(value: ProviderId?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeProviderId.write(value, buf)
         }
     }
 }
@@ -2459,4 +3334,31 @@ public object FfiConverterSequenceTypeResumePoint: FfiConverterRustBuffer<List<R
         }
     }
 }
+    @Throws(ApiException::class) fun `diagnosticsInitialize`(`directory`: kotlin.String)
+        = 
+    uniffiRustCallWithError(ApiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_anime_levisione_core_fn_func_diagnostics_initialize(
+        FfiConverterString.lower(`directory`),_status)
+}
+    
+    
+ fun `diagnosticsRecord`(`event`: DiagnosticEvent)
+        = 
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_anime_levisione_core_fn_func_diagnostics_record(
+        FfiConverterTypeDiagnosticEvent.lower(`event`),_status)
+}
+    
+    
+
+    @Throws(ApiException::class) fun `diagnosticsSnapshot`(): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(ApiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_anime_levisione_core_fn_func_diagnostics_snapshot(
+        _status)
+}
+    )
+    }
+    
+
 

@@ -29,6 +29,16 @@ storage, not the desktop download directory; they do not require ffmpeg. Separat
 subtitles can be selected in the player; subtitles burned into a video cannot be
 turned off. Streams/available languages depend on the upstream provider.
 
+## Diagnostic logs
+
+In **Settings → Providers & support → Export diagnostic logs**, confirm and
+choose a recipient app. Both Rust network diagnostics and Media3 buffering/load
+errors are included in the same bounded JSONL snapshot. No ADB is needed.
+Logs stay in app-private storage (four × 256 KiB); only explicitly exported cache
+snapshots are exposed via a non-exported FileProvider with temporary read grants.
+No credentials, URLs, media metadata, viewing history/positions or raw exception
+messages are recorded. See [diagnostic logs](../README.md#diagnostic-logs).
+
 ## Build
 
 Prerequisites: Rust 1.88+, JDK 17+, Android SDK command-line tools or Android Studio,

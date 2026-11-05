@@ -1,6 +1,10 @@
+use crate::diagnostics::{self, DiagnosticEvent, DiagnosticFailure};
 use anyhow::{Context, Result, bail};
 use reqwest::{Client, RequestBuilder, StatusCode};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use url::Url;
 
 pub const USER_AGENT: &str = concat!(
@@ -39,8 +43,13 @@ pub fn web_url(raw: &str) -> Result<Url> {
 pub struct Http {
     pub client: Client,
     pub jar: Arc<reqwest::cookie::Jar>,
+    provider: Option<crate::model::ProviderId>,
 }
 impl Http {
+    pub(super) fn with_provider(mut self, provider: crate::model::ProviderId) -> Self {
+        self.provider = Some(provider);
+        self
+    }
     pub fn new() -> Result<Self> {
         Self::with_timeouts(Duration::from_secs(15), Duration::from_secs(5))
     }
@@ -50,6 +59,7 @@ impl Http {
         Ok(Self {
             client: build_client(&jar, Duration::from_secs(15), Duration::from_secs(5))?,
             jar,
+            provider: None,
         })
     }
     /// Fail-fast client for parallel domain probes, where waiting out a full
@@ -59,6 +69,7 @@ impl Http {
         Ok(Self {
             client: build_client(&jar, timeout, connect_timeout)?,
             jar,
+            provider: None,
         })
     }
     pub async fn text(&self, request: RequestBuilder) -> Result<String> {
@@ -70,18 +81,29 @@ impl Http {
         self.fetch(request, false).await
     }
     async fn fetch(&self, request: RequestBuilder, retry: bool) -> Result<(Url, String)> {
+        let id = diagnostics::next_id();
         for attempt in 0..3 {
             let req = request.try_clone().context("Cannot retry request body")?;
+            let start = Instant::now();
             let result = req.send().await;
+            let elapsed_ms = start.elapsed().as_millis() as u64;
             match result {
                 Ok(mut response) => {
                     let status = response.status();
-                    if retry
+                    let will_retry = retry
                         && (status.is_server_error()
                             || status == StatusCode::TOO_MANY_REQUESTS
                             || status == StatusCode::REQUEST_TIMEOUT)
-                        && attempt < 2
-                    {
+                        && attempt < 2;
+                    diagnostics::record(DiagnosticEvent::HttpResponse {
+                        id,
+                        provider: self.provider,
+                        attempt: attempt as u32 + 1,
+                        status: status.as_u16(),
+                        elapsed_ms,
+                        retry: will_retry,
+                    });
+                    if will_retry {
                         let wait = response
                             .headers()
                             .get("retry-after")
@@ -118,12 +140,29 @@ impl Http {
                         String::from_utf8(bytes).context("Provider returned non-UTF-8 text")?,
                     ));
                 }
-                Err(e) if retry && attempt < 2 && (e.is_timeout() || e.is_connect()) => {
-                    tokio::time::sleep(Duration::from_millis(250 * (attempt + 1))).await;
-                }
                 Err(e) => {
-                    return Err(e.without_url())
-                        .context("Network request failed; check your connection and provider URL");
+                    let will_retry = retry && attempt < 2 && (e.is_timeout() || e.is_connect());
+                    diagnostics::record(DiagnosticEvent::HttpFailure {
+                        id,
+                        provider: self.provider,
+                        attempt: attempt as u32 + 1,
+                        elapsed_ms,
+                        retry: will_retry,
+                        kind: if e.is_timeout() {
+                            DiagnosticFailure::Timeout
+                        } else if e.is_connect() {
+                            DiagnosticFailure::Connect
+                        } else {
+                            DiagnosticFailure::Io
+                        },
+                    });
+                    if will_retry {
+                        tokio::time::sleep(Duration::from_millis(250 * (attempt + 1))).await;
+                    } else {
+                        return Err(e.without_url()).context(
+                            "Network request failed; check your connection and provider URL",
+                        );
+                    }
                 }
             }
         }

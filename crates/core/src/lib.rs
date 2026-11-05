@@ -4,6 +4,7 @@
 //! the `uniffi` feature (see `api`).
 
 pub mod audio;
+pub mod diagnostics;
 pub mod model;
 pub mod provider;
 pub mod store;

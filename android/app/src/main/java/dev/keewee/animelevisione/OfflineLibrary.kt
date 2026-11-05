@@ -67,6 +67,9 @@ class OfflineLibrary(private val context: Context) {
                             download: Download,
                             finalException: Exception?,
                         ) {
+                            if (finalException != null) DiagnosticLogs.record(
+                                uniffi.anime_levisione_core.DiagnosticEvent.CoreFailure(DiagnosticLogs.failure(finalException))
+                            )
                             refresh()
                         }
 

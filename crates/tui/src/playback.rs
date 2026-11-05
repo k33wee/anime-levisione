@@ -3,6 +3,7 @@ use crate::events::Message;
 use anime_levisione_core::store::Progress;
 use anime_levisione_core::{
     audio::AudioTrack,
+    diagnostics::{self, DiagnosticEvent},
     model::{Anime, Episode},
     provider::{Stream, http::USER_AGENT},
     store::Config,
@@ -161,6 +162,7 @@ pub async fn play(
             config.player
         )
     })?;
+    diagnostics::record(DiagnosticEvent::PlayerOpened { session: id });
     let _ = tx.send(Message::PlaybackStarted {
         request_id: id,
         audio: audio.map(|track| track.label),
@@ -183,6 +185,11 @@ pub async fn play(
     #[cfg(not(unix))]
     let _ = (socket, anime, episode, tx, resume);
     let status = child.wait().await?;
+    diagnostics::record(DiagnosticEvent::PlayerProcessExit {
+        session: id,
+        code: status.code(),
+        success: status.success(),
+    });
     #[cfg(unix)]
     if let Some(monitor) = monitor {
         // EOF normally reaches the observer first; allow its final buffered update.

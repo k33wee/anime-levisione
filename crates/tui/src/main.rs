@@ -1,5 +1,6 @@
 use anime_levisione::{app, demo, events, input, playback, ui};
 use anime_levisione_core::{
+    diagnostics::{self, DiagnosticEvent, DiagnosticOperation},
     model, provider, store,
     sync::{self, Account},
 };
@@ -68,6 +69,8 @@ enum Commands {
     },
     /// Check player, downloader, configuration and live provider connectivity
     Doctor,
+    /// Export local diagnostic logs to stdout (no library data or credentials)
+    Logs,
     /// Connect a personal Telegram bot or another device's secret connection key (stdin)
     Login {
         /// Optional private Telegram chat ID; otherwise detected after a recent /start
@@ -83,15 +86,35 @@ enum Commands {
 }
 #[tokio::main]
 async fn main() -> Result<()> {
+    let result = run().await;
+    if let Err(error) = &result {
+        diagnostics::record(DiagnosticEvent::CoreFailure {
+            kind: diagnostics::failure(error),
+        });
+    }
+    diagnostics::record(DiagnosticEvent::SessionEnded);
+    result
+}
+async fn run() -> Result<()> {
     let cli = Cli::parse();
     if cli.demo && cli.command.is_some() {
         bail!("--demo is a TUI preview; do not combine it with subcommands");
+    }
+    if matches!(cli.command, Some(Commands::Logs)) {
+        let directory = Store::directory(cli.data_dir)?.join("logs");
+        print!("{}", diagnostics::read_snapshot(&directory)?);
+        return Ok(());
     }
     let mut store = if cli.demo {
         None
     } else {
         Some(Store::open(cli.data_dir)?)
     };
+    if let Some(store) = &store
+        && diagnostics::initialize(&store.dir.join("logs")).is_err()
+    {
+        eprintln!("Warning: local diagnostic logging is unavailable.");
+    }
     let mut config = store.as_ref().map(|s| s.config.clone()).unwrap_or_default();
     if cli.player.is_none()
         && config.refresh_default_player()
@@ -464,6 +487,10 @@ impl Effects {
                     let config = app.config.clone();
                     let tx = self.tx.clone();
                     self.player = Some(tokio::spawn(async move {
+                        let mut diagnostic = diagnostics::Operation::new(
+                            DiagnosticOperation::Playback,
+                            Some(anime.provider),
+                        );
                         let result = async {
                             let media = match local {
                                 Some(media) => media,
@@ -484,7 +511,13 @@ impl Effects {
                             };
                             let (tracks, audio_warning) =
                                 if playback::supports_audio_choice(&config) {
-                                    match anime_levisione_core::audio::probe(&media).await {
+                                    match diagnostics::observe(
+                                        DiagnosticOperation::AudioProbe,
+                                        None,
+                                        anime_levisione_core::audio::probe(&media),
+                                    )
+                                    .await
+                                    {
                                         Ok(tracks) => (tracks, None),
                                         Err(error) => (vec![], Some(format!("{error:#}"))),
                                     }
@@ -507,8 +540,9 @@ impl Effects {
                             )
                             .await
                         }
-                        .await
-                        .map_err(|e| format!("{e:#}"));
+                        .await;
+                        diagnostic.finish(&result);
+                        let result = result.map_err(|e| format!("{e:#}"));
                         let _ = tx.send(Message::PlaybackEnded { request_id, result });
                     }));
                 }
@@ -520,6 +554,10 @@ impl Effects {
                     let config = app.config.clone();
                     let tx = self.tx.clone();
                     self.download = Some(tokio::spawn(async move {
+                        let mut diagnostic = diagnostics::Operation::new(
+                            DiagnosticOperation::Download,
+                            Some(anime.provider),
+                        );
                         let result = async {
                             let provider = registry.ready(anime.provider).await;
                             let mut stream = bounded(provider.resolve(&anime, &episode)).await;
@@ -534,8 +572,9 @@ impl Effects {
                             let _ = tx.send(Message::DownloadStarted);
                             playback::download(config, stream, anime, episode).await
                         }
-                        .await
-                        .map_err(|e| format!("{e:#}"));
+                        .await;
+                        diagnostic.finish(&result);
+                        let result = result.map_err(|e| format!("{e:#}"));
                         let _ = tx.send(Message::DownloadEnded(result));
                     }));
                 }

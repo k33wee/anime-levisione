@@ -5,7 +5,7 @@
 # anime-levisione
 
 [![CI](https://github.com/k33wee/anime-levisione/actions/workflows/ci.yml/badge.svg)](https://github.com/k33wee/anime-levisione/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-0.4.0-73e2a7)
+![Version](https://img.shields.io/badge/version-0.4.1-73e2a7)
 [![GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-73e2a7)](https://www.gnu.org/licenses/gpl-3.0.html)
 
 English · [Italiano](README.it.md)
@@ -205,6 +205,31 @@ database, so racing snapshots converge when the involved devices sync again.
 [Android setup, tests and storage details →](android/README.md)
 
 ---
+
+## Diagnostic logs
+
+Since 0.4.1 both clients keep local rotating diagnostics (four files of up to
+256 KiB each). Nothing is uploaded automatically. Logs contain app/OS version,
+architecture, timestamps, provider names, technical operation IDs, HTTP statuses,
+retry/cancellation events and player timings/error codes. They exclude titles,
+searches, viewing positions/history, media IDs, URLs, paths, raw error messages,
+Telegram tokens and connection keys. These content-free diagnostics also run in
+private mode; `--demo` writes nothing.
+
+- **TUI:** reproduce the issue, then run
+  `anime-levisione logs > anime-levisione-diagnostics.jsonl` and attach the file to
+  an issue. Use the same `--data-dir` if customized. Export works even with a
+  corrupt library or while the TUI is running (a best-effort snapshot during
+  rotation). The files live in `logs/` under the data directory shown by `,`.
+- **Android:** **Settings → Providers & support → Export diagnostic logs**.
+  Confirm, then choose an app to share the snapshot. Only that diagnostic file
+  receives temporary read access, never your library or downloads. Up to three
+  export snapshots remain in the app cache; Android may clear them.
+
+Include reproduction steps, app version and OS with the report. Logs cannot
+reconstruct incidents from older versions; reproduce after updating. Rust panics
+and uncaught Android exceptions record only safe categories/source line numbers,
+not full crash dumps. Logging/storage failures never prevent normal app use.
 
 ## Development
 

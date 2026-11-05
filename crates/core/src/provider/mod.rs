@@ -3,6 +3,7 @@ pub mod http;
 pub mod parse;
 
 use crate::{
+    diagnostics::{self, DiagnosticOperation},
     model::{Anime, Episode, ProviderId, sort_episodes},
     store::Config,
 };
@@ -114,7 +115,7 @@ impl Provider {
         Ok(Self {
             id,
             base,
-            http,
+            http: http.with_provider(id),
             token: Mutex::new(None),
         })
     }
@@ -122,7 +123,7 @@ impl Provider {
     /// session (cookies and CSRF token) it already bootstrapped.
     fn promote(self) -> Result<Self> {
         Ok(Self {
-            http: Http::sharing(self.http.jar.clone())?,
+            http: Http::sharing(self.http.jar.clone())?.with_provider(self.id),
             ..self
         })
     }
@@ -177,6 +178,14 @@ impl Provider {
         token.clone().context("Provider session not initialized")
     }
     pub async fn search(&self, query: &str) -> Result<Vec<Anime>> {
+        diagnostics::observe(
+            DiagnosticOperation::Search,
+            Some(self.id),
+            self.search_inner(query),
+        )
+        .await
+    }
+    async fn search_inner(&self, query: &str) -> Result<Vec<Anime>> {
         if self.id == ProviderId::StreamingCommunity {
             let raw = self
                 .http
@@ -228,6 +237,14 @@ impl Provider {
         bail!("Provider session expired after refresh")
     }
     pub async fn latest(&self) -> Result<Vec<Anime>> {
+        diagnostics::observe(
+            DiagnosticOperation::Catalog,
+            Some(self.id),
+            self.latest_inner(),
+        )
+        .await
+    }
+    async fn latest_inner(&self) -> Result<Vec<Anime>> {
         let raw = self.page(self.base.clone()).await?;
         match self.id {
             ProviderId::AnimeWorld => parse::world_latest(&raw, &self.base),
@@ -235,7 +252,15 @@ impl Provider {
             ProviderId::StreamingCommunity => parse::community_latest(&raw, &self.base),
         }
     }
-    pub async fn episodes(&self, mut anime: Anime) -> Result<(Anime, Vec<Episode>)> {
+    pub async fn episodes(&self, anime: Anime) -> Result<(Anime, Vec<Episode>)> {
+        diagnostics::observe(
+            DiagnosticOperation::Episodes,
+            Some(self.id),
+            self.episodes_inner(anime),
+        )
+        .await
+    }
+    async fn episodes_inner(&self, mut anime: Anime) -> Result<(Anime, Vec<Episode>)> {
         match self.id {
             ProviderId::AnimeWorld => {
                 let html = self
@@ -350,6 +375,14 @@ impl Provider {
         }
     }
     pub async fn resolve(&self, anime: &Anime, episode: &Episode) -> Result<Stream> {
+        diagnostics::observe(
+            DiagnosticOperation::Resolve,
+            Some(self.id),
+            self.resolve_inner(anime, episode),
+        )
+        .await
+    }
+    async fn resolve_inner(&self, anime: &Anime, episode: &Episode) -> Result<Stream> {
         if anime.provider != self.id {
             bail!("Title belongs to a different provider");
         }
@@ -573,7 +606,15 @@ impl Registry {
                 cands.push(candidate.clone());
             }
         }
+        let mut diagnostic =
+            diagnostics::Operation::new(DiagnosticOperation::DomainProbe, Some(id));
         let resolution = domains::resolve(id, &cands).await;
+        let probe_result = if resolution.live.is_some() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("No live domain"))
+        };
+        diagnostic.finish(&probe_result);
         let Some(live) = resolution.live.clone() else {
             let error = resolution
                 .error
@@ -607,6 +648,7 @@ impl Registry {
 pub async fn bounded<T>(future: impl std::future::Future<Output = Result<T>>) -> Result<T> {
     tokio::time::timeout(Duration::from_secs(30), future)
         .await
+        .inspect_err(|_| diagnostics::record(diagnostics::DiagnosticEvent::ProviderDeadline))
         .context("Provider timed out after 30 seconds; press r to retry or use the other source")?
 }
 

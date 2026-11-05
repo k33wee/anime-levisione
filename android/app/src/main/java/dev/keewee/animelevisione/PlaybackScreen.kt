@@ -47,6 +47,7 @@ import androidx.media3.ui.PlayerView
 import java.util.Locale
 import kotlinx.coroutines.delay
 import uniffi.anime_levisione_core.Episode
+import uniffi.anime_levisione_core.DiagnosticEvent
 
 private data class LanguageTrack(
     val group: TrackGroup,
@@ -99,6 +100,7 @@ fun PlaybackScreen(
     val activity = context as? Activity
     val latestProgress by rememberUpdatedState(onProgress)
     val latestNext by rememberUpdatedState(onEpisode)
+    val diagnosticSession = remember(request.session) { DiagnosticLogs.nextSession() }
     val player =
         remember(request.session) {
             ExoPlayer.Builder(context)
@@ -108,6 +110,8 @@ fun PlaybackScreen(
                 )
                 .build()
                 .apply {
+                    DiagnosticLogs.record(DiagnosticEvent.PlayerOpened(diagnosticSession))
+                    addAnalyticsListener(DiagnosticAnalytics(diagnosticSession))
                     setAudioAttributes(
                         AudioAttributes.Builder()
                             .setUsage(C.USAGE_MEDIA)
@@ -243,6 +247,7 @@ fun PlaybackScreen(
             lifecycle.removeObserver(observer)
             player.removeListener(listener)
             player.release()
+            DiagnosticLogs.record(DiagnosticEvent.PlayerClosed(diagnosticSession))
             activity?.requestedOrientation =
                 previousOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             window?.let {

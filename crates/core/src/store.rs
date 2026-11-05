@@ -290,13 +290,16 @@ impl Store {
             _lock: None,
         })
     }
+    /// Resolve paths without reading library data (also used for log export).
+    pub fn directory(dir: Option<PathBuf>) -> Result<PathBuf> {
+        dir.or_else(|| {
+            directories::ProjectDirs::from("dev", "keewee", "anime-levisione")
+                .map(|d| d.config_dir().to_path_buf())
+        })
+        .context("Cannot locate configuration directory; pass --data-dir")
+    }
     fn load(dir: Option<PathBuf>) -> Result<(PathBuf, Config, Library)> {
-        let dir = dir
-            .or_else(|| {
-                directories::ProjectDirs::from("dev", "keewee", "anime-levisione")
-                    .map(|d| d.config_dir().to_path_buf())
-            })
-            .context("Cannot locate configuration directory; pass --data-dir")?;
+        let dir = Self::directory(dir)?;
         fs::create_dir_all(&dir).with_context(|| format!("Cannot create {}", dir.display()))?;
         let config_path = dir.join("config.toml");
         let config = match fs::read_to_string(&config_path) {

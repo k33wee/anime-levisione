@@ -5,7 +5,7 @@
 # anime-levisione
 
 [![CI](https://github.com/k33wee/anime-levisione/actions/workflows/ci.yml/badge.svg)](https://github.com/k33wee/anime-levisione/actions/workflows/ci.yml)
-![Versione](https://img.shields.io/badge/versione-0.4.0-73e2a7)
+![Versione](https://img.shields.io/badge/versione-0.4.1-73e2a7)
 [![GPL-3.0-only](https://img.shields.io/badge/licenza-GPL--3.0--only-73e2a7)](https://www.gnu.org/licenses/gpl-3.0.html)
 
 [English](README.md) · Italiano
@@ -212,6 +212,32 @@ dispositivi coinvolti si sincronizzano nuovamente.
 [Configurazione, test e dettagli sullo spazio dati Android →](android/README.md)
 
 ---
+
+## Log diagnostici
+
+Dalla 0.4.1 entrambi i client conservano log locali rotanti: quattro file da
+massimo 256 KiB ciascuno. Non viene inviato nulla automaticamente. Si registrano
+versione app/OS, architettura, timestamp, nomi dei provider, ID tecnici delle
+operazioni, codici HTTP, retry/cancellazioni e tempi/codici errore del player.
+Sono esclusi titoli, ricerche, cronologia e posizioni di visione, ID dei contenuti,
+URL, percorsi, messaggi d'errore grezzi, token Telegram e connection key.
+La diagnostica senza contenuti resta attiva in modalità privata; `--demo` non
+scrive nulla.
+
+- **TUI:** riproduci il problema, poi esegui
+  `anime-levisione logs > anime-levisione-diagnostics.jsonl` e allega il file
+  all'issue. Se personalizzato, usa lo stesso `--data-dir`. L'esportazione funziona
+  anche con libreria corrotta o TUI aperta (snapshot best-effort durante la
+  rotazione). I file sono in `logs/` nella cartella dati mostrata premendo `,`.
+- **Android:** **Settings → Providers & support → Export diagnostic logs**.
+  Conferma e scegli l'app a cui condividere lo snapshot. L'accesso temporaneo in
+  lettura riguarda solo il file diagnostico, mai libreria o download. La cache
+  conserva al massimo tre snapshot esportati; Android può eliminarli.
+
+Allega anche passaggi per riprodurre, versione e sistema operativo. I log non
+ricostruiscono problemi delle vecchie versioni: riproducili dopo l'aggiornamento.
+Panic Rust ed eccezioni Android non gestite registrano soltanto categorie sicure
+e numeri di riga, non dump completi. Problemi di storage/logging non bloccano l'app.
 
 ## Sviluppo
 

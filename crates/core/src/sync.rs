@@ -666,6 +666,14 @@ impl Client {
         Ok(account)
     }
     pub async fn sync(&self, library: &Library) -> Result<Outcome> {
+        crate::diagnostics::observe(
+            crate::diagnostics::DiagnosticOperation::Sync,
+            None,
+            self.sync_inner(library),
+        )
+        .await
+    }
+    async fn sync_inner(&self, library: &Library) -> Result<Outcome> {
         let identity = self.account.identity();
         let checkpoint = library
             .sync_checkpoint

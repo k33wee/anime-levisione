@@ -161,6 +161,7 @@ class CatalogViewModel(application: Application) : AndroidViewModel(application)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            DiagnosticLogs.record(DiagnosticEvent.CoreFailure(DiagnosticLogs.failure(e)))
             message = e.message ?: "Something went wrong. Please retry."
         }
     }

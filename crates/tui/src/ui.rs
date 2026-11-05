@@ -675,7 +675,7 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
     let width = outer.width.saturating_sub(6).min(92);
     let height = match modal {
         Modal::Quit => 7,
-        Modal::Settings => 21,
+        Modal::Settings => 22,
         Modal::Commands => 24,
         Modal::Diagnostics => 18,
         Modal::Help => 30,
@@ -907,6 +907,7 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
             Line::from(accent("Edit config.toml, then restart to apply changes.")),
             Line::from(""),
             Line::from(format!("Directory: {}", app.data_path)),
+            Line::from("Local logs: logs/ · export: anime-levisione logs > diagnostics.jsonl"),
             Line::from(format!("Player: {}", app.config.player)),
             Line::from(format!("Player args: {:?}", app.config.player_args)),
             Line::from(format!("Downloads: {}", app.config.download_dir.display())),

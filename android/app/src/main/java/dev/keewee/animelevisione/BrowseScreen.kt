@@ -9,6 +9,7 @@ package dev.keewee.animelevisione
 import android.Manifest
 import android.app.Activity
 import android.content.ContextWrapper
+import android.content.Intent
 import android.view.WindowManager
 import android.os.Build
 import androidx.activity.compose.BackHandler
@@ -62,6 +63,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.exoplayer.offline.Download
 import coil.compose.AsyncImage
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import uniffi.anime_levisione_core.*
 
 @Composable
@@ -988,6 +991,10 @@ private fun SettingsScreen(vm: CatalogViewModel) {
     var chatId by remember { mutableStateOf("") }
     var loginDialog by remember { mutableStateOf(false) }
     var mirrors by remember { mutableStateOf(false) }
+    var exportDialog by remember { mutableStateOf(false) }
+    var exporting by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     LazyColumn(
         modifier = Modifier.testTag("settingsList"),
         contentPadding = PaddingValues(20.dp),
@@ -1116,6 +1123,19 @@ private fun SettingsScreen(vm: CatalogViewModel) {
             }
         }
         item {
+            OutlinedButton(
+                onClick = { exportDialog = true },
+                enabled = DiagnosticLogs.available && !exporting,
+                modifier = Modifier.testTag("exportDiagnostics"),
+            ) { Text(if (exporting) "Preparing logs…" else "Export diagnostic logs") }
+            Text(
+                "Local rotating logs (up to 1 MiB). No titles, viewing history, URLs or credentials. Nothing is sent automatically.",
+                color = Muted,
+                fontSize = 12.sp,
+            )
+            if (!DiagnosticLogs.available) Text("Diagnostic logging unavailable on this device.", color = Muted)
+        }
+        item {
             Text(
                 "anime-levisione • GPL-3.0\nDownloads stay on this device. Optional Telegram sync stores an encrypted copy of lists and progress in your personal bot chat.",
                 color = Muted,
@@ -1123,6 +1143,30 @@ private fun SettingsScreen(vm: CatalogViewModel) {
             )
         }
     }
+    if (exportDialog) AlertDialog(
+        onDismissRequest = { exportDialog = false },
+        title = { Text("Share diagnostic logs?") },
+        text = { Text("Includes app/OS version, event timestamps, provider names, network error codes and player buffering timings. No library data, URLs, Telegram tokens or connection keys. Choose who receives the file on the next screen.") },
+        confirmButton = {
+            TextButton(onClick = {
+                exportDialog = false
+                exporting = true
+                scope.launch {
+                    try {
+                        val intent = DiagnosticLogs.shareIntent(context)
+                        context.startActivity(Intent.createChooser(intent, "Share diagnostic logs"))
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        vm.message = "Unable to export diagnostic logs. Please try again."
+                    } finally {
+                        exporting = false
+                    }
+                }
+            }) { Text("Choose app") }
+        },
+        dismissButton = { TextButton(onClick = { exportDialog = false }) { Text("Cancel") } },
+    )
     if (loginDialog) ProtectCredentials()
     if (loginDialog)
         AlertDialog(
