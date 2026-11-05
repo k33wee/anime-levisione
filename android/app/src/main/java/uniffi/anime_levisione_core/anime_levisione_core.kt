@@ -2552,6 +2552,13 @@ sealed class DiagnosticEvent {
     object ExportRequested : DiagnosticEvent()
     
     
+    data class MediaFailure(
+        val `operation`: DiagnosticOperation, 
+        val `kind`: DiagnosticFailure, 
+        val `status`: kotlin.UShort?) : DiagnosticEvent() {
+        companion object
+    }
+    
 
     
     companion object
@@ -2645,6 +2652,11 @@ public object FfiConverterTypeDiagnosticEvent : FfiConverterRustBuffer<Diagnosti
                 FfiConverterULong.read(buf),
                 )
             21 -> DiagnosticEvent.ExportRequested
+            22 -> DiagnosticEvent.MediaFailure(
+                FfiConverterTypeDiagnosticOperation.read(buf),
+                FfiConverterTypeDiagnosticFailure.read(buf),
+                FfiConverterOptionalUShort.read(buf),
+                )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -2820,6 +2832,15 @@ public object FfiConverterTypeDiagnosticEvent : FfiConverterRustBuffer<Diagnosti
                 4UL
             )
         }
+        is DiagnosticEvent.MediaFailure -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeDiagnosticOperation.allocationSize(value.`operation`)
+                + FfiConverterTypeDiagnosticFailure.allocationSize(value.`kind`)
+                + FfiConverterOptionalUShort.allocationSize(value.`status`)
+            )
+        }
     }
 
     override fun write(value: DiagnosticEvent, buf: ByteBuffer) {
@@ -2950,6 +2971,13 @@ public object FfiConverterTypeDiagnosticEvent : FfiConverterRustBuffer<Diagnosti
             }
             is DiagnosticEvent.ExportRequested -> {
                 buf.putInt(21)
+                Unit
+            }
+            is DiagnosticEvent.MediaFailure -> {
+                buf.putInt(22)
+                FfiConverterTypeDiagnosticOperation.write(value.`operation`, buf)
+                FfiConverterTypeDiagnosticFailure.write(value.`kind`, buf)
+                FfiConverterOptionalUShort.write(value.`status`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -3094,6 +3122,38 @@ public object FfiConverterTypeProviderId: FfiConverterRustBuffer<ProviderId> {
 }
 
 
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalUShort: FfiConverterRustBuffer<kotlin.UShort?> {
+    override fun read(buf: ByteBuffer): kotlin.UShort? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterUShort.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.UShort?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterUShort.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.UShort?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterUShort.write(value, buf)
+        }
+    }
+}
 
 
 

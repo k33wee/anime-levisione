@@ -1,6 +1,8 @@
 //! Read audio-language metadata without opening a player. HLS masters need only
 //! one HTTP request; other media use ffprobe when it is installed.
 use crate::{
+    diagnostics::{DiagnosticFailure, DiagnosticOperation},
+    media_error::{self, MediaError},
     model::clean,
     provider::{Media, http::Http},
 };
@@ -170,7 +172,7 @@ pub async fn probe(media: &Media) -> Result<Vec<AudioTrack>> {
         .kill_on_drop(true)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .args([
             "-v",
             "error",
@@ -208,24 +210,45 @@ async fn probe_command(mut command: Command) -> Result<Vec<AudioTrack>> {
         let mut child = command
             .spawn()
             .context("ffprobe is not installed or could not start")?;
-        let mut raw = Vec::new();
-        child
-            .stdout
-            .take()
-            .context("ffprobe stdout unavailable")?
-            .take(64 * 1024 + 1)
-            .read_to_end(&mut raw)
-            .await?;
-        if raw.len() > 64 * 1024 {
-            bail!("Audio metadata exceeded the safety limit");
-        }
-        if !child.wait().await?.success() {
-            bail!("Could not inspect audio metadata");
+        let stderr = child.stderr.take();
+        let work = async {
+            let mut raw = Vec::new();
+            child
+                .stdout
+                .take()
+                .context("ffprobe stdout unavailable")?
+                .take(64 * 1024 + 1)
+                .read_to_end(&mut raw)
+                .await?;
+            if raw.len() > 64 * 1024 {
+                bail!("Audio metadata exceeded the safety limit");
+            }
+            Ok::<_, anyhow::Error>((child.wait().await?, raw))
+        };
+        let (result, output) = match stderr {
+            Some(stderr) => media_error::capture(stderr, work).await,
+            None => (work.await, media_error::Output::default()),
+        };
+        let (status, raw) = result?;
+        if !status.success() {
+            let error = output.failure.unwrap_or(MediaError {
+                kind: DiagnosticFailure::Data,
+                status: None,
+            });
+            error.record(DiagnosticOperation::AudioProbe);
+            return Err(error.into());
         }
         ffprobe_tracks(&raw)
     })
     .await
-    .context("Audio metadata probe timed out")?
+    .map_err(|_| {
+        let error = MediaError {
+            kind: DiagnosticFailure::Timeout,
+            status: None,
+        };
+        error.record(DiagnosticOperation::AudioProbe);
+        anyhow::Error::new(error)
+    })?
 }
 
 #[cfg(test)]
@@ -269,6 +292,32 @@ mod tests {
         assert!(tracks[1].default);
         assert!(ffprobe_tracks(b"{}").is_err());
         assert_eq!(language_code("eng,ita"), None);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_probe_reports_safe_http_codes_and_drains_stderr() -> Result<()> {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf '%s\\n' 'https://private.example/?token=SECRET: Server returned 503 Service Unavailable' >&2; exit 1"])
+            .kill_on_drop(true).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let error = probe_command(command).await.expect_err("failed probe");
+        assert_eq!(
+            error
+                .downcast_ref::<MediaError>()
+                .expect("typed media error")
+                .status,
+            Some(503)
+        );
+        assert!(!format!("{error:#}").contains("SECRET"));
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "i=0; while [ \"$i\" -lt 10000 ]; do echo noise >&2; i=$((i + 1)); done; printf '%s' '{\"streams\":[]}'"])
+            .kill_on_drop(true).stdout(Stdio::piped()).stderr(Stdio::piped());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3), probe_command(command))
+                .await??
+                .is_empty()
+        );
         Ok(())
     }
 

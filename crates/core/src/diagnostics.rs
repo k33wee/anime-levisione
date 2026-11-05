@@ -32,7 +32,7 @@ pub enum DiagnosticOperation {
     Download,
     Sync,
 }
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum DiagnosticFailure {
@@ -160,6 +160,11 @@ pub enum DiagnosticEvent {
         bits_per_second: u64,
     },
     ExportRequested,
+    MediaFailure {
+        operation: DiagnosticOperation,
+        kind: DiagnosticFailure,
+        status: Option<u16>,
+    },
 }
 
 pub fn next_id() -> u64 {
@@ -251,6 +256,9 @@ pub fn read_snapshot(directory: &Path) -> io::Result<String> {
 
 pub fn failure(error: &anyhow::Error) -> DiagnosticFailure {
     for cause in error.chain() {
+        if let Some(e) = cause.downcast_ref::<crate::media_error::MediaError>() {
+            return e.kind;
+        }
         if let Some(e) = cause.downcast_ref::<reqwest::Error>() {
             return if e.is_timeout() {
                 DiagnosticFailure::Timeout

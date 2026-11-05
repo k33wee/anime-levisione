@@ -3,7 +3,8 @@ use crate::events::Message;
 use anime_levisione_core::store::Progress;
 use anime_levisione_core::{
     audio::AudioTrack,
-    diagnostics::{self, DiagnosticEvent},
+    diagnostics::{self, DiagnosticEvent, DiagnosticOperation},
+    media_error,
     model::{Anime, Episode},
     provider::{Stream, http::USER_AGENT},
     store::Config,
@@ -48,20 +49,7 @@ pub fn is_mpv(config: &Config) -> bool {
 }
 /// Drain stderr so children cannot block; keep only a small diagnostic tail.
 pub async fn diagnostic_tail(reader: impl AsyncRead + Unpin) -> String {
-    use tokio::io::AsyncReadExt;
-    let mut reader = reader;
-    let mut chunk = [0u8; 1024];
-    let mut tail = Vec::new();
-    while let Ok(n) = reader.read(&mut chunk).await {
-        if n == 0 {
-            break;
-        }
-        tail.extend_from_slice(&chunk[..n]);
-        if tail.len() > 4096 {
-            tail.drain(..tail.len() - 4096);
-        }
-    }
-    anime_levisione_core::model::clean(&String::from_utf8_lossy(&tail))
+    media_error::read(reader).await.tail
 }
 fn player_command(config: &Config, request: &PlayRequest, _socket: &Path) -> Command {
     let PlayRequest {
@@ -169,7 +157,6 @@ pub async fn play(
         warning: audio_warning,
     });
     let stderr = child.stderr.take().context("Player stderr unavailable")?;
-    let diagnostic = tokio::spawn(diagnostic_tail(stderr));
     #[cfg(unix)]
     let monitor = if is_mpv(&config) {
         Some(tokio::spawn(monitor(
@@ -184,7 +171,8 @@ pub async fn play(
     };
     #[cfg(not(unix))]
     let _ = (socket, anime, episode, tx, resume);
-    let status = child.wait().await?;
+    let (status, output) = media_error::capture(stderr, child.wait()).await;
+    let status = status?;
     diagnostics::record(DiagnosticEvent::PlayerProcessExit {
         session: id,
         code: status.code(),
@@ -195,7 +183,21 @@ pub async fn play(
         // EOF normally reaches the observer first; allow its final buffered update.
         let _ = tokio::time::timeout(Duration::from_millis(400), monitor).await;
     }
-    let tail = diagnostic.await.unwrap_or_default();
+    // VLC reports a successful process exit even for an unreadable media URL.
+    // Require its explicit fatal-input marker: decoder/HTTP fallback warnings alone
+    // do not mean playback failed.
+    let failure = if is_vlc(&config) {
+        output.vlc_failure()
+    } else if !status.success() {
+        output.failure
+    } else {
+        None
+    };
+    if let Some(error) = failure {
+        error.record(DiagnosticOperation::Playback);
+        return Err(error.into());
+    }
+    let tail = output.tail;
     if !status.success() {
         bail!(
             "Player exited with {status}. {}",
@@ -480,6 +482,42 @@ mod tests {
             index: 1,
             default: false,
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn vlc_exit_zero_with_a_fatal_input_error_is_reported_as_failure() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir()?;
+        let executable = directory.path().join("vlc");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nprintf '%s\\n' 'HTTP 503 error' \"main input error: VLC is unable to open the MRL https://private.example/?token=SECRET\" >&2\nexit 0\n",
+        )?;
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))?;
+        let config = Config {
+            player: executable.to_string_lossy().into_owned(),
+            ..Config::default()
+        };
+        let (tx, _) = mpsc::unbounded_channel();
+        let error = play(config.clone(), request(None), tx)
+            .await
+            .expect_err("VLC lied about success");
+        assert_eq!(
+            error
+                .downcast_ref::<media_error::MediaError>()
+                .expect("typed error")
+                .status,
+            Some(503)
+        );
+        assert!(!format!("{error:#}").contains("SECRET"));
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\necho 'main decoder error: buffer deadlock prevented' >&2\nexit 0\n",
+        )?;
+        let (tx, _) = mpsc::unbounded_channel();
+        play(config, request(None), tx).await?;
+        Ok(())
     }
 
     #[test]

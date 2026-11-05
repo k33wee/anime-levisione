@@ -5,7 +5,7 @@
 # anime-levisione
 
 [![CI](https://github.com/k33wee/anime-levisione/actions/workflows/ci.yml/badge.svg)](https://github.com/k33wee/anime-levisione/actions/workflows/ci.yml)
-![Versione](https://img.shields.io/badge/versione-0.4.1-73e2a7)
+![Versione](https://img.shields.io/badge/versione-0.4.2-73e2a7)
 [![GPL-3.0-only](https://img.shields.io/badge/licenza-GPL--3.0--only-73e2a7)](https://www.gnu.org/licenses/gpl-3.0.html)
 
 [English](README.md) · Italiano
@@ -233,6 +233,12 @@ scrive nulla.
   Conferma e scegli l'app a cui condividere lo snapshot. L'accesso temporaneo in
   lettura riguarda solo il file diagnostico, mai libreria o download. La cache
   conserva al massimo tre snapshot esportati; Android può eliminarli.
+
+Dalla 0.4.2 la TUI riconosce gli errori di apertura di VLC anche quando il processo
+termina con codice `0`. Se ffprobe rileva un errore di trasporto noto su una fonte
+remota, la TUI rinnova il link una volta prima della riproduzione; i metadati
+mancanti/non supportati restano facoltativi. Nei log finiscono soltanto categorie
+d'errore e codici HTTP disponibili.
 
 Allega anche passaggi per riprodurre, versione e sistema operativo. I log non
 ricostruiscono problemi delle vecchie versioni: riproducili dopo l'aggiornamento.

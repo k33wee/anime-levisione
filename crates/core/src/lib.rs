@@ -5,6 +5,7 @@
 
 pub mod audio;
 pub mod diagnostics;
+pub mod media_error;
 pub mod model;
 pub mod provider;
 pub mod store;

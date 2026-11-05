@@ -5,7 +5,7 @@
 # anime-levisione
 
 [![CI](https://github.com/k33wee/anime-levisione/actions/workflows/ci.yml/badge.svg)](https://github.com/k33wee/anime-levisione/actions/workflows/ci.yml)
-![Version](https://img.shields.io/badge/version-0.4.1-73e2a7)
+![Version](https://img.shields.io/badge/version-0.4.2-73e2a7)
 [![GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-73e2a7)](https://www.gnu.org/licenses/gpl-3.0.html)
 
 English · [Italiano](README.it.md)
@@ -225,6 +225,11 @@ private mode; `--demo` writes nothing.
   Confirm, then choose an app to share the snapshot. Only that diagnostic file
   receives temporary read access, never your library or downloads. Up to three
   export snapshots remain in the app cache; Android may clear them.
+
+Since 0.4.2 the TUI recognizes VLC input failures even when VLC exits with code
+`0`. If ffprobe reports a known transport error for a remote source, the TUI
+refreshes its media link once before playback; missing/unsupported metadata stays
+optional. Diagnostics retain only error categories and available HTTP codes.
 
 Include reproduction steps, app version and OS with the report. Logs cannot
 reconstruct incidents from older versions; reproduce after updating. Rust panics

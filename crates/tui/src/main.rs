@@ -1,6 +1,8 @@
 use anime_levisione::{app, demo, events, input, playback, ui};
 use anime_levisione_core::{
+    audio::{self, AudioTrack},
     diagnostics::{self, DiagnosticEvent, DiagnosticOperation},
+    media_error::MediaError,
     model, provider, store,
     sync::{self, Account},
 };
@@ -335,6 +337,58 @@ async fn catalog(provider: &Provider, query: &Option<String>) -> Result<Vec<Anim
         None => bounded(provider.latest()).await,
     }
 }
+async fn resolve_media(
+    registry: &Registry,
+    anime: &Anime,
+    episode: &model::Episode,
+    tx: &mpsc::UnboundedSender<Message>,
+) -> Result<playback::Media> {
+    let provider = registry.ready(anime.provider).await;
+    let mut stream = bounded(provider.resolve(anime, episode)).await;
+    if stream.is_err()
+        && registry.healable(anime.provider)
+        && let Ok(fresh) = relocate(registry, anime.provider, tx, &provider).await
+    {
+        stream = bounded(fresh.resolve(anime, episode)).await;
+    }
+    Ok(playback::Media::Remote(stream?))
+}
+
+type PreparedAudio = (playback::Media, Vec<AudioTrack>, Option<String>);
+/// A resolved download link can already be unavailable although its embed page
+/// returned 200. Refresh it once for a known transport failure, never for missing
+/// ffprobe/unsupported metadata. Metadata remains optional if recovery fails.
+async fn prepare_audio<Refresh, RefreshFuture, Probe, ProbeFuture>(
+    mut media: playback::Media,
+    refresh: Refresh,
+    mut probe: Probe,
+) -> PreparedAudio
+where
+    Refresh: FnOnce() -> RefreshFuture,
+    RefreshFuture: std::future::Future<Output = Result<playback::Media>>,
+    Probe: FnMut(playback::Media) -> ProbeFuture,
+    ProbeFuture: std::future::Future<Output = Result<Vec<AudioTrack>>>,
+{
+    let mut result = probe(media.clone()).await;
+    if matches!(media, playback::Media::Remote(_))
+        && result
+            .as_ref()
+            .err()
+            .and_then(|e| e.downcast_ref::<MediaError>())
+            .is_some_and(MediaError::retryable)
+    {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if let Ok(fresh) = refresh().await {
+            media = fresh;
+            result = probe(media.clone()).await;
+        }
+    }
+    match result {
+        Ok(tracks) => (media, tracks, None),
+        Err(error) => (media, vec![], Some(format!("{error:#}"))),
+    }
+}
+
 /// The player task holds the resolved URL while the UI asks for a language.
 /// Cancelling/aborting drops the receiver; stale prompts cannot launch a player.
 async fn choose_audio(
@@ -494,35 +548,25 @@ impl Effects {
                         let result = async {
                             let media = match local {
                                 Some(media) => media,
-                                None => {
-                                    let provider = registry.ready(anime.provider).await;
-                                    let mut stream =
-                                        bounded(provider.resolve(&anime, &episode)).await;
-                                    if stream.is_err()
-                                        && registry.healable(anime.provider)
-                                        && let Ok(fresh) =
-                                            relocate(&registry, anime.provider, &tx, &provider)
-                                                .await
-                                    {
-                                        stream = bounded(fresh.resolve(&anime, &episode)).await;
-                                    }
-                                    playback::Media::Remote(stream?)
-                                }
+                                None => resolve_media(&registry, &anime, &episode, &tx).await?,
                             };
-                            let (tracks, audio_warning) =
+                            let (media, tracks, audio_warning) =
                                 if playback::supports_audio_choice(&config) {
-                                    match diagnostics::observe(
-                                        DiagnosticOperation::AudioProbe,
-                                        None,
-                                        anime_levisione_core::audio::probe(&media),
+                                    prepare_audio(
+                                        media,
+                                        || resolve_media(&registry, &anime, &episode, &tx),
+                                        |media| async move {
+                                            diagnostics::observe(
+                                                DiagnosticOperation::AudioProbe,
+                                                None,
+                                                audio::probe(&media),
+                                            )
+                                            .await
+                                        },
                                     )
                                     .await
-                                    {
-                                        Ok(tracks) => (tracks, None),
-                                        Err(error) => (vec![], Some(format!("{error:#}"))),
-                                    }
                                 } else {
-                                    (vec![], None)
+                                    (media, vec![], None)
                                 };
                             let audio = choose_audio(request_id, tracks, &tx).await?;
                             playback::play(
@@ -941,6 +985,139 @@ mod tests {
             Cli::try_parse_from(["anime-levisione", "login", "--token", "secret"]).is_err(),
             "credentials never belong in process arguments"
         );
+    }
+
+    fn remote_media(path: &str) -> playback::Media {
+        playback::Media::Remote(provider::Stream {
+            url: format!("https://media.example/{path}")
+                .parse()
+                .expect("test URL"),
+            referer: "https://player.example/".into(),
+        })
+    }
+
+    #[tokio::test]
+    async fn known_transport_failure_refreshes_the_media_once_before_the_picker() {
+        let mut probes = 0;
+        let (media, _, warning) = prepare_audio(
+            remote_media("old.mp4"),
+            || async { Ok(remote_media("fresh.mp4")) },
+            |media| {
+                probes += 1;
+                std::future::ready(if media.source().ends_with("old.mp4") {
+                    Err(MediaError {
+                        kind: diagnostics::DiagnosticFailure::Http,
+                        status: Some(503),
+                    }
+                    .into())
+                } else {
+                    Ok(vec![])
+                })
+            },
+        )
+        .await;
+        assert_eq!(probes, 2);
+        assert!(media.source().ends_with("fresh.mp4"));
+        assert!(warning.is_none());
+    }
+
+    #[tokio::test]
+    async fn persistent_probe_failures_are_bounded_and_metadata_remains_optional() {
+        let mut probes = 0;
+        let mut refreshes = 0;
+        let (_, tracks, warning) = prepare_audio(
+            remote_media("old.mp4"),
+            || {
+                refreshes += 1;
+                std::future::ready(Ok(remote_media("fresh.mp4")))
+            },
+            |_| {
+                probes += 1;
+                std::future::ready(Err(MediaError {
+                    kind: diagnostics::DiagnosticFailure::Http,
+                    status: Some(403),
+                }
+                .into()))
+            },
+        )
+        .await;
+        assert_eq!((probes, refreshes), (2, 1));
+        assert!(tracks.is_empty());
+        assert!(warning.expect("warning").contains("403"));
+    }
+
+    #[tokio::test]
+    async fn missing_optional_probe_or_local_media_never_refresh_the_provider() {
+        for media in [
+            remote_media("source.mp4"),
+            playback::Media::Local("fixture.mp4".into()),
+        ] {
+            let is_local = matches!(media, playback::Media::Local(_));
+            let (_, _, warning) = prepare_audio(
+                media,
+                || async { panic!("must not refresh") },
+                |_| {
+                    std::future::ready(Err(if is_local {
+                        MediaError {
+                            kind: diagnostics::DiagnosticFailure::Http,
+                            status: Some(503),
+                        }
+                        .into()
+                    } else {
+                        anyhow::anyhow!("ffprobe not installed")
+                    }))
+                },
+            )
+            .await;
+            assert!(warning.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_preserves_the_original_player_fallback() {
+        let (media, _, warning) = prepare_audio(
+            remote_media("old.mp4"),
+            || async { anyhow::bail!("resolution unavailable") },
+            |_| {
+                std::future::ready(Err(MediaError {
+                    kind: diagnostics::DiagnosticFailure::Timeout,
+                    status: None,
+                }
+                .into()))
+            },
+        )
+        .await;
+        assert!(media.source().ends_with("old.mp4"));
+        assert!(warning.is_some());
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_recovery_never_refreshes_or_starts_a_player() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let refreshed = Arc::new(AtomicBool::new(false));
+        let flag = refreshed.clone();
+        let task = tokio::spawn(async move {
+            prepare_audio(
+                remote_media("old.mp4"),
+                || async move {
+                    flag.store(true, Ordering::SeqCst);
+                    Ok(remote_media("fresh.mp4"))
+                },
+                |_| {
+                    std::future::ready(Err(MediaError {
+                        kind: diagnostics::DiagnosticFailure::Http,
+                        status: Some(503),
+                    }
+                    .into()))
+                },
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        task.abort();
+        assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+        tokio::time::sleep(Duration::from_millis(550)).await;
+        assert!(!refreshed.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
