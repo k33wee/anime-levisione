@@ -79,11 +79,38 @@ Clic per attivare un pannello o selezionare una riga, rotella per scorrere.
 Il layout entra da 60×18; le finestre più piccole mostrano il pannello attivo.
 Se sono disponibili più lingue audio, scegli con le frecce e conferma con `Enter`.
 
+### Download
+
+Premi `d` su un episodio per scaricarlo con ffmpeg. Il flusso riproduce quello
+della riproduzione:
+
+- **Lingua** — quando la fonte offre più lingue audio, lo stesso selettore si
+  apre prima di salvare alcunché; `Esc` annulla.
+- **Destinazione** — l'avviso e il selettore mostrano sempre il file di
+  destinazione. Gli episodi finiscono nella cartella indicata da `,` (default:
+  la cartella video) come `Titolo [provider-id]/Episodio N.mkv`; modifica
+  `download_dir` in `config.toml` per cambiarla.
+- **Avanzamento** — il pannello Attività mostra dimensione scaricata, totale
+  stimato, percentuale e velocità, aggiornati mentre ffmpeg lavora.
+- **Annulla** — `Ctrl+d` interrompe ffmpeg e rimuove il file parziale. Gli
+  episodi completati compaiono nella libreria offline (`5`) con i manifest.
+
 ### Libreria e sincronizzazione Telegram personale
 
 Watchlist, cronologia e punti di ripresa vengono salvati in locale. Premi `,`
 per vedere i percorsi dei dati; `config.toml` contiene player, argomenti,
 cartella download e mirror dei provider. `--data-dir` usa una libreria separata.
+
+I provider cambiano dominio spesso. Il core verifica l'URL configurato, l'ultimo
+dominio funzionante (`domains.json`), i tuoi mirror e poi una lista integrata,
+seguendo i redirect — `streamingcommunityz.day`/`.build` puntano oggi a
+`streamingcommunityz.nexus`, verificato anche direttamente. Quando tutti i
+candidati falliscono da una rete ma funzionano da un'altra — tipico dei blocchi
+DNS/SNI a livello di operatore — aggiungi un mirror raggiungibile sotto
+`streamingcommunity_domains = ["https://mirror.example"]` in `config.toml`
+(Android: Impostazioni → mirror dei provider). `!` mostra la diagnostica per
+provider nella TUI; `anime-levisione doctor` controlla la connettività da riga
+di comando.
 
 La sincronizzazione facoltativa usa **un tuo bot Telegram dedicato**, senza
 account dell'app né server del progetto. Crea il bot tramite @BotFather, invia
@@ -176,6 +203,22 @@ L'APK di release è firmato con la chiave di release del progetto. Le build di
 debug (artefatti CI, `assembleDebug`) usano una chiave diversa: Android rifiuta
 l'aggiornamento dall'una all'altra e la disinstallazione cancella libreria e
 download locali. Usa l'APK di release.
+
+#### L'APK non si installa
+
+- **"App non installata" sopra una copia esistente** — la build installata usa
+  una chiave di firma diversa (debug contro release). Disinstalla prima la
+  vecchia app; i dati locali andranno persi, quindi tieni una copia via sync
+  Telegram o accettane la perdita.
+- **Errore di analisi / "non compatibile"** — il dispositivo ha una versione
+di Android precedente alla 8.0 (richiede API 26+). Tutte e quattro le ABI
+(arm64/arm32/x86_64/x86) sono incluse, quindi quasi mai è questione di CPU:
+quasi sempre è la versione di Android.
+- **Rifiuto di "downgrade"** — stai installando una versione più vecchia sopra
+  una più recente. Usa `adb install -d`, oppure disinstalla prima.
+- **Play Protect** blocca le app caricate lateralmente su alcuni dispositivi;
+  scegli "Installa comunque" / "Più dettagli → Installa" solo per questa
+  installazione.
 
 <details>
 <summary>Alternative</summary>

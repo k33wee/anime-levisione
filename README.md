@@ -77,11 +77,36 @@ Click to focus a pane or select a row; scroll with the wheel. The layout fits
 from 60×18; smaller windows show the focused pane. When several audio languages
 are available, select one with the arrows and confirm with `Enter`.
 
+### Downloads
+
+Press `d` on an episode to download it with ffmpeg. The flow mirrors playback:
+
+- **Language** — when a source offers several audio languages, the same picker
+  opens before anything is saved; `Esc` cancels.
+- **Destination** — the notice and the audio picker always show the target
+  file. Episodes land in the directory listed by `,` (default: your video
+  folder) as `Title [provider-id]/Episode N.mkv`; edit `download_dir` in
+  `config.toml` to change it.
+- **Progress** — the Activity pane shows downloaded size, an estimated total
+  size, percentage and speed, refreshed while ffmpeg runs.
+- **Cancel** — `Ctrl+d` aborts ffmpeg and removes the partial file. Finished
+  episodes appear in the Offline library (`5`) with their manifests.
+
 ### Library and personal Telegram sync
 
 Watchlist, history and resume points are stored locally. Press `,` to see data
 paths; `config.toml` holds the player, its arguments, download directory and
 provider mirrors. Use `--data-dir` for a separate library.
+
+Providers rotate domains often. The core probes the configured URL, the last
+domain that worked (`domains.json`), your mirrors, then a built-in list,
+following redirects — `streamingcommunityz.day`/`.build` currently forward to
+`streamingcommunityz.nexus`, which is also probed directly. When every candidate
+fails from one network but works from another — typical of ISP-level DNS/SNI
+blocks on some carriers — add a reachable mirror under
+`streamingcommunity_domains = ["https://mirror.example"]` in `config.toml`
+(Android: Settings → provider mirrors). `!` shows per-provider diagnostics in
+the TUI; `anime-levisione doctor` checks connectivity on the command line.
 
 Optional cross-device sync uses **your own dedicated Telegram bot**, without an
 application account or project server. Create a bot with @BotFather, send `/start`
@@ -171,6 +196,20 @@ The release APK is signed with the project's release key. Debug builds (CI
 artifacts, `assembleDebug`) use a debug key: Android refuses to update one with
 the other, and uninstalling deletes the app's local library and downloads.
 Prefer the release APK.
+
+#### The APK will not install
+
+- **"App not installed" over an existing copy** — the installed build uses a
+  different signing key (debug vs release). Uninstall the old app first;
+  this deletes its local data, so keep a Telegram-sync copy or accept the loss.
+- **Parse error / "not compatible"** — the device runs Android older than 8.0
+  (the app requires API 26+). All four ABIs (arm64/arm32/x86_64/x86) are
+  bundled, so CPU architecture is almost never the problem; the Android
+  version is.
+- **"Downgrade" refusal** — installing an older release over a newer one.
+  Use `adb install -d`, or uninstall first.
+- **Play Protect** blocks side-loaded apps on some devices; pick
+  "Install anyway" / "More details → Install" for this one install.
 
 <details>
 <summary>Alternatives</summary>
