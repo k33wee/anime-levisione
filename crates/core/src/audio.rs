@@ -167,6 +167,23 @@ pub async fn probe(media: &Media) -> Result<Vec<AudioTrack>> {
             return hls_tracks(&raw);
         }
     }
+    let raw = probe_command(ffprobe(media, TRACK_ARGS)).await?;
+    ffprobe_tracks(&raw)
+}
+
+/// Track-selection entries shared by [`ffprobe`] callers.
+const TRACK_ARGS: &[&str] = &[
+    "-select_streams",
+    "a",
+    "-show_entries",
+    "stream_tags=language,title:stream_disposition=default",
+];
+/// Container duration entry used by [`duration`].
+const DURATION_ARGS: &[&str] = &["-show_entries", "format=duration"];
+
+/// Base ffprobe invocation for a media source: shared protocol whitelist,
+/// headers, and JSON output. Callers append their entry selectors.
+fn ffprobe(media: &Media, entries: &[&str]) -> Command {
     let mut command = Command::new("ffprobe");
     command
         .kill_on_drop(true)
@@ -180,10 +197,6 @@ pub async fn probe(media: &Media) -> Result<Vec<AudioTrack>> {
             "2000000",
             "-probesize",
             "1048576",
-            "-select_streams",
-            "a",
-            "-show_entries",
-            "stream_tags=language,title:stream_disposition=default",
             "-of",
             "json",
             "-protocol_whitelist",
@@ -201,11 +214,28 @@ pub async fn probe(media: &Media) -> Result<Vec<AudioTrack>> {
             command.arg("file,crypto,data");
         }
     }
-    command.arg("-i").arg(media.source());
-    probe_command(command).await
+    command.args(entries).arg("-i").arg(media.source());
+    command
 }
 
-async fn probe_command(mut command: Command) -> Result<Vec<AudioTrack>> {
+/// Total media duration in seconds when ffprobe can determine it. Optional
+/// metadata (e.g. for download-size estimates); callers may ignore errors.
+pub async fn duration(media: &Media) -> Result<f64> {
+    let raw = probe_command(ffprobe(media, DURATION_ARGS)).await?;
+    duration_from_json(&raw)
+}
+
+fn duration_from_json(raw: &[u8]) -> Result<f64> {
+    let value: Value = serde_json::from_slice(raw).context("Invalid ffprobe duration metadata")?;
+    let seconds = value["format"]["duration"]
+        .as_str()
+        .and_then(|d| d.parse::<f64>().ok())
+        .filter(|d| d.is_finite() && *d > 0.0)
+        .context("ffprobe reported no usable duration")?;
+    Ok(seconds)
+}
+
+async fn probe_command(mut command: Command) -> Result<Vec<u8>> {
     tokio::time::timeout(Duration::from_secs(8), async move {
         let mut child = command
             .spawn()
@@ -238,7 +268,7 @@ async fn probe_command(mut command: Command) -> Result<Vec<AudioTrack>> {
             error.record(DiagnosticOperation::AudioProbe);
             return Err(error.into());
         }
-        ffprobe_tracks(&raw)
+        Ok(raw)
     })
     .await
     .map_err(|_| {
@@ -313,11 +343,34 @@ mod tests {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "i=0; while [ \"$i\" -lt 10000 ]; do echo noise >&2; i=$((i + 1)); done; printf '%s' '{\"streams\":[]}'"])
             .kill_on_drop(true).stdout(Stdio::piped()).stderr(Stdio::piped());
-        assert!(
+        assert_eq!(
             tokio::time::timeout(Duration::from_secs(3), probe_command(command))
                 .await??
-                .is_empty()
+                .as_slice(),
+            b"{\"streams\":[]}"
         );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn duration_parses_container_metadata_and_rejects_junk() -> Result<()> {
+        assert_eq!(
+            duration_from_json(br#"{"format":{"duration":"1420.500000"}}"#)?,
+            1420.5
+        );
+        for junk in [
+            br#"{}"#.as_slice(),
+            br#"{"format":{"duration":"0"}}"#.as_slice(),
+            br#"{"format":{"duration":"not-a-number"}}"#.as_slice(),
+            br#"{"format":{"duration":1420.5}}"#.as_slice(),
+        ] {
+            assert!(
+                duration_from_json(junk).is_err(),
+                "{:?}",
+                String::from_utf8_lossy(junk)
+            );
+        }
         Ok(())
     }
 

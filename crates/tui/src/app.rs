@@ -1,4 +1,8 @@
-use crate::{events::Message, input::Input, playback::OfflineEpisode};
+use crate::{
+    events::Message,
+    input::Input,
+    playback::{self, OfflineEpisode},
+};
 use anime_levisione_core::{
     audio::AudioTrack,
     model::{Anime, Episode, ProviderId, normalize, sort_by_rank},
@@ -122,6 +126,8 @@ pub enum Modal {
 pub struct AudioPrompt {
     pub tracks: Vec<AudioTrack>,
     pub state: ListState,
+    /// Whether the confirmed track starts ffmpeg (true) or a player (false).
+    pub for_download: bool,
     reply: tokio::sync::oneshot::Sender<Option<AudioTrack>>,
 }
 
@@ -147,6 +153,7 @@ pub enum Action {
         resume: f64,
     },
     Download {
+        request_id: u64,
         anime: Anime,
         episode: Episode,
     },
@@ -192,6 +199,21 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("Quit", "q"),
 ];
 
+/// Human-readable byte size for download progress: `1.4 GiB`, `512 MiB`, `42 KiB`.
+fn size_label(bytes: u64) -> String {
+    const UNIT: f64 = 1024.0;
+    let value = bytes as f64;
+    if value >= UNIT * UNIT * UNIT {
+        format!("{value:.1} GiB", value = value / (UNIT * UNIT * UNIT))
+    } else if value >= UNIT * UNIT {
+        format!("{value:.1} MiB", value = value / (UNIT * UNIT))
+    } else if value >= UNIT {
+        format!("{:.0} KiB", value / UNIT)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 pub struct App {
     pub config: Config,
     pub library: Library,
@@ -236,6 +258,12 @@ pub struct App {
     pub downloading: bool,
     pub playback_label: String,
     pub download_label: String,
+    /// Destination file of the active download, once resolved.
+    pub download_target: String,
+    /// Human-readable size/speed/percentage of the active download.
+    pub download_progress: String,
+    /// Monotonic download request id; stale task messages are dropped.
+    pub download_id: u64,
     pub tick: usize,
     pub search_pending: Option<Instant>,
     detail_pending: Option<Instant>,
@@ -289,6 +317,9 @@ impl App {
             downloading: false,
             playback_label: String::new(),
             download_label: String::new(),
+            download_target: String::new(),
+            download_progress: String::new(),
+            download_id: 0,
             tick: 0,
             search_pending: None,
             detail_pending: None,
@@ -793,12 +824,33 @@ impl App {
                 self.audio_prompt = Some(AudioPrompt {
                     tracks,
                     state: ListState::default().with_selected(Some(selected)),
+                    for_download: false,
                     reply,
                 });
                 if self.modal != Some(Modal::Quit) {
                     self.modal = Some(Modal::Audio);
                 }
                 self.notify("Choose an audio language before starting the player", false);
+            }
+            Message::ChooseDownloadAudio {
+                request_id,
+                tracks,
+                reply,
+            } => {
+                if request_id != self.download_id || !self.downloading || reply.is_closed() {
+                    return vec![];
+                }
+                let selected = tracks.iter().position(|track| track.default).unwrap_or(0);
+                self.audio_prompt = Some(AudioPrompt {
+                    tracks,
+                    state: ListState::default().with_selected(Some(selected)),
+                    for_download: true,
+                    reply,
+                });
+                if self.modal != Some(Modal::Quit) {
+                    self.modal = Some(Modal::Audio);
+                }
+                self.notify("Choose the audio language to save in the download", false);
             }
             Message::PlaybackStarted {
                 request_id,
@@ -848,12 +900,40 @@ impl App {
                     Err(e) => self.notify(e, true),
                 }
             }
-            Message::DownloadStarted => self.notify(
-                "Downloading with ffmpeg · keep browsing · Ctrl+d to cancel",
-                false,
-            ),
-            Message::DownloadEnded(result) => {
+            Message::DownloadStarted { request_id, path } => {
+                if request_id != self.download_id || !self.downloading {
+                    return vec![];
+                }
+                self.download_target = path.clone();
+                self.notify(format!("Downloading to {path} · Ctrl+d to cancel"), false);
+            }
+            Message::DownloadProgress {
+                request_id,
+                bytes,
+                total,
+                speed,
+            } => {
+                if request_id != self.download_id || !self.downloading {
+                    return vec![];
+                }
+                let mut text = size_label(bytes);
+                if let Some(total) = total.filter(|total| *total > 0) {
+                    text.push_str(&format!(" / ~{}", size_label(total)));
+                    let percent = ((bytes as f64 / total as f64) * 100.0).floor() as u64;
+                    text.push_str(&format!(" · {}%", percent.min(100)));
+                }
+                if let Some(speed) = speed {
+                    text.push_str(&format!(" · {}/s", size_label(speed)));
+                }
+                self.download_progress = text;
+            }
+            Message::DownloadEnded { request_id, result } => {
+                if request_id != self.download_id || !self.downloading {
+                    return vec![];
+                }
                 self.downloading = false;
+                self.download_progress.clear();
+                self.download_target.clear();
                 match result {
                     Ok(path) => {
                         self.notify(format!("Saved {path}"), false);
@@ -862,6 +942,7 @@ impl App {
                     Err(e) => self.notify(e, true),
                 }
             }
+            Message::Notice { text, error } => self.notify(text, error),
         }
         vec![]
     }
@@ -904,11 +985,7 @@ impl App {
                     return vec![];
                 }
                 K::Char('x') => return self.cancel_playback(),
-                K::Char('d') => {
-                    self.downloading = false;
-                    self.notify("Download cancelled; partial file removed", false);
-                    return vec![Action::CancelDownload];
-                }
+                K::Char('d') => return self.cancel_download(),
                 _ => {}
             }
         }
@@ -1170,9 +1247,21 @@ impl App {
                     (self.selected().cloned(), self.selected_episode().cloned())
                 {
                     self.downloading = true;
+                    self.download_id = self.download_id.wrapping_add(1);
                     self.download_label = format!("{} · Ep {}", anime.title, episode.number);
-                    self.notify("Resolving download…", false);
-                    return vec![Action::Download { anime, episode }];
+                    self.download_target = playback::destination(&self.config, &anime, &episode)
+                        .display()
+                        .to_string();
+                    self.download_progress.clear();
+                    self.notify(
+                        format!("Resolving download → {}", self.download_target),
+                        false,
+                    );
+                    return vec![Action::Download {
+                        request_id: self.download_id,
+                        anime,
+                        episode,
+                    }];
                 }
             }
             K::Char('r') => return self.refresh(),
@@ -1230,21 +1319,54 @@ impl App {
     }
     fn confirm_audio(&mut self) {
         if let Some(prompt) = self.audio_prompt.take() {
+            let for_download = prompt.for_download;
             let track = prompt
                 .state
                 .selected()
                 .and_then(|index| prompt.tracks.get(index))
                 .cloned();
             if prompt.reply.send(track).is_err() {
-                self.playing = false;
-                self.notify("Audio selection expired; retry the episode", true);
+                if for_download {
+                    self.downloading = false;
+                    self.notify("Audio selection expired; retry the download", true);
+                } else {
+                    self.playing = false;
+                    self.notify("Audio selection expired; retry the episode", true);
+                }
             } else {
-                self.notify("Starting player with the selected audio…", false);
+                self.notify(
+                    if for_download {
+                        "Starting the download with the selected audio…"
+                    } else {
+                        "Starting player with the selected audio…"
+                    },
+                    false,
+                );
             }
         }
         self.modal = None;
     }
+    /// Abort the active download: invalidate its pending messages, close a
+    /// download audio prompt if one is open, and clear the visible state.
+    /// Both `Ctrl+d` and `Esc` in the download picker land here.
+    fn cancel_download(&mut self) -> Vec<Action> {
+        if self.audio_prompt.as_ref().is_some_and(|p| p.for_download) {
+            self.audio_prompt = None;
+            if self.modal == Some(Modal::Audio) {
+                self.modal = None;
+            }
+        }
+        self.download_id = self.download_id.wrapping_add(1);
+        self.downloading = false;
+        self.download_progress.clear();
+        self.download_target.clear();
+        self.notify("Download cancelled; partial file removed", false);
+        vec![Action::CancelDownload]
+    }
     fn cancel_playback(&mut self) -> Vec<Action> {
+        if self.audio_prompt.as_ref().is_some_and(|p| p.for_download) {
+            return self.cancel_download();
+        }
         self.playback_id = self.playback_id.wrapping_add(1);
         self.playing = false;
         self.audio_prompt = None;
@@ -1411,6 +1533,173 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn size_label_formats_bytes_down_to_binary_units() {
+        assert_eq!(size_label(0), "0 B");
+        assert_eq!(size_label(512), "512 B");
+        assert_eq!(size_label(2 * 1024), "2 KiB");
+        assert_eq!(size_label(3 * 1024 * 1024), "3.0 MiB");
+        assert_eq!(
+            size_label((2.5 * 1024.0 * 1024.0 * 1024.0) as u64),
+            "2.5 GiB"
+        );
+    }
+
+    fn show_download_audio(
+        app: &mut App,
+        request_id: u64,
+    ) -> tokio::sync::oneshot::Receiver<Option<AudioTrack>> {
+        let (reply, receive) = tokio::sync::oneshot::channel();
+        let tracks = anime_levisione_core::audio::hls_tracks(
+            r#"#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,NAME="Italian",LANGUAGE="ita",DEFAULT=YES
+#EXT-X-MEDIA:TYPE=AUDIO,NAME="English",LANGUAGE="eng""#,
+        )
+        .expect("tracks");
+        app.message(Message::ChooseDownloadAudio {
+            request_id,
+            tracks,
+            reply,
+        });
+        receive
+    }
+
+    #[test]
+    fn download_key_resolves_a_request_with_target_and_request_id() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), false);
+        let anime = sample(ProviderId::AnimeUnity, "7");
+        app.details.insert(
+            anime.key(),
+            (
+                anime.clone(),
+                vec![Episode {
+                    id: "e1".into(),
+                    number: "1".into(),
+                    title: String::new(),
+                }],
+            ),
+        );
+        app.discovered = vec![anime];
+        app.rebuild();
+        app.focus = Focus::Episodes;
+        let actions = app.key(K::Char('d').into());
+        assert!(matches!(
+            actions.as_slice(),
+            [Action::Download { request_id: 1, .. }]
+        ));
+        assert!(app.downloading);
+        assert!(app.download_id == 1);
+        assert!(app.download_target.contains("Episode 1.mkv"));
+        assert!(app.notice.contains("Resolving download"));
+    }
+
+    #[test]
+    fn download_audio_picker_confirms_and_cancels_like_the_playback_one() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), false);
+        app.downloading = true;
+        app.download_id = 3;
+        let mut receive = show_download_audio(&mut app, 3);
+        assert_eq!(app.modal, Some(Modal::Audio));
+        assert!(receive.try_recv().is_err(), "waits for confirmation");
+        app.key(K::Down.into());
+        assert!(app.key(K::Enter.into()).is_empty());
+        let track = receive.try_recv().expect("choice").expect("track");
+        assert_eq!(track.language.as_deref(), Some("eng"));
+        assert!(app.downloading, "the download task continues");
+        // Escape cancels the download, not the player.
+        let mut receive = show_download_audio(&mut app, 3);
+        assert!(matches!(
+            app.key(K::Esc.into()).as_slice(),
+            [Action::CancelDownload]
+        ));
+        assert!(!app.downloading);
+        assert!(app.modal.is_none());
+        assert!(receive.try_recv().is_err());
+        // Ctrl+d during the prompt cancels through the same path and also
+        // invalidates the request id, so late task messages are dropped.
+        app.downloading = true;
+        app.download_id = 4;
+        let _receive = show_download_audio(&mut app, 4);
+        assert!(matches!(
+            app.key(KeyEvent::new(K::Char('d'), M::CONTROL)).as_slice(),
+            [Action::CancelDownload]
+        ));
+        assert!(!app.downloading);
+        assert!(app.modal.is_none());
+        assert_eq!(
+            app.download_id, 5,
+            "request id bumped to void stale messages"
+        );
+        // A stale prompt from the cancelled download cannot re-open the modal.
+        let mut stale = show_download_audio(&mut app, 3);
+        assert!(stale.try_recv().is_err());
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn download_progress_and_completion_update_the_activity_state() {
+        let mut app = App::new(Config::default(), Library::default(), "test".into(), false);
+        app.downloading = true;
+        app.download_id = 2;
+        app.message(Message::DownloadStarted {
+            request_id: 2,
+            path: "/tmp/anime/Episode 1.mkv".into(),
+        });
+        assert_eq!(app.download_target, "/tmp/anime/Episode 1.mkv");
+        assert!(app.notice.contains("/tmp/anime/Episode 1.mkv"));
+        app.message(Message::DownloadProgress {
+            request_id: 2,
+            bytes: 10 * 1024 * 1024,
+            total: Some(40 * 1024 * 1024),
+            speed: Some(2 * 1024 * 1024),
+        });
+        assert_eq!(
+            app.download_progress,
+            "10.0 MiB / ~40.0 MiB · 25% · 2.0 MiB/s"
+        );
+        // Unknown totals degrade to size and speed only.
+        app.message(Message::DownloadProgress {
+            request_id: 2,
+            bytes: 512,
+            total: None,
+            speed: None,
+        });
+        assert_eq!(app.download_progress, "512 B");
+        // Stale requests from a cancelled download are ignored.
+        app.message(Message::DownloadProgress {
+            request_id: 1,
+            bytes: 1,
+            total: Some(2),
+            speed: None,
+        });
+        assert_eq!(app.download_progress, "512 B");
+        let actions = app.message(Message::DownloadEnded {
+            request_id: 2,
+            result: Ok("/tmp/anime/Episode 1.mkv".into()),
+        });
+        assert!(matches!(actions.as_slice(), [Action::Rescan]));
+        assert!(!app.downloading);
+        assert!(app.download_progress.is_empty());
+        assert!(app.download_target.is_empty());
+        // A completion from a cancelled request cannot tear down a new download.
+        app.downloading = true;
+        app.download_id = 5;
+        app.download_progress = "1 MiB".into();
+        app.message(Message::DownloadEnded {
+            request_id: 2,
+            result: Ok("/tmp/anime/Episode 1.mkv".into()),
+        });
+        assert!(app.downloading);
+        assert_eq!(app.download_progress, "1 MiB");
+        // Notice passthrough for background fallbacks.
+        app.message(Message::Notice {
+            text: "Audio track not found; retrying with all audio languages".into(),
+            error: true,
+        });
+        assert!(app.notice.contains("all audio languages"));
+        assert!(app.notice_error);
+    }
 
     fn show_audio(
         app: &mut App,
@@ -1785,6 +2074,7 @@ mod tests {
         app.audio_prompt = Some(AudioPrompt {
             tracks: vec![],
             state: ListState::default(),
+            for_download: false,
             reply,
         });
         let actions = app.key(K::Char('n').into());

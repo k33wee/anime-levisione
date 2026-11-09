@@ -413,6 +413,30 @@ async fn choose_audio(
     Ok(Some(track))
 }
 
+/// Same prompt as [`choose_audio`], but the choice drives the ffmpeg audio
+/// mapping of a download.
+async fn choose_download_audio(
+    request_id: u64,
+    tracks: Vec<AudioTrack>,
+    tx: &mpsc::UnboundedSender<Message>,
+) -> Result<Option<AudioTrack>> {
+    if tracks.len() <= 1 {
+        return Ok(None);
+    }
+    let (reply, receive) = tokio::sync::oneshot::channel();
+    tx.send(Message::ChooseDownloadAudio {
+        request_id,
+        tracks,
+        reply,
+    })
+    .map_err(|_| anyhow::anyhow!("Download UI closed"))?;
+    let track = receive
+        .await
+        .context("Download cancelled before choosing an audio language")?
+        .context("Download cancelled before choosing an audio language")?;
+    Ok(Some(track))
+}
+
 struct TerminalRestore;
 impl Drop for TerminalRestore {
     fn drop(&mut self) {
@@ -590,7 +614,11 @@ impl Effects {
                         let _ = tx.send(Message::PlaybackEnded { request_id, result });
                     }));
                 }
-                Action::Download { anime, episode } => {
+                Action::Download {
+                    request_id,
+                    anime,
+                    episode,
+                } => {
                     abort(&mut self.download);
                     let Some(registry) = self.registry.clone() else {
                         continue;
@@ -613,13 +641,59 @@ impl Effects {
                                 stream = bounded(fresh.resolve(&anime, &episode)).await;
                             }
                             let stream = stream?;
-                            let _ = tx.send(Message::DownloadStarted);
-                            playback::download(config, stream, anime, episode).await
+                            // Announce the destination before asking anything:
+                            // the user always sees where the file will land.
+                            let destination = playback::destination(&config, &anime, &episode);
+                            if destination.exists() {
+                                anyhow::bail!("Already downloaded: {}", destination.display());
+                            }
+                            let _ = tx.send(Message::DownloadStarted {
+                                request_id,
+                                path: destination.display().to_string(),
+                            });
+                            // Downloads ask for a language exactly like playback;
+                            // the probe may refresh a stale link once.
+                            let (media, tracks, _) = prepare_audio(
+                                playback::Media::Remote(stream),
+                                || async { resolve_media(&registry, &anime, &episode, &tx).await },
+                                |media| async move {
+                                    diagnostics::observe(
+                                        DiagnosticOperation::AudioProbe,
+                                        None,
+                                        audio::probe(&media),
+                                    )
+                                    .await
+                                },
+                            )
+                            .await;
+                            let playback::Media::Remote(stream) = media else {
+                                anyhow::bail!("Download needs a remote stream");
+                            };
+                            let audio = choose_download_audio(request_id, tracks, &tx).await?;
+                            // Duration is optional: without it progress simply
+                            // reports bytes and speed instead of a percentage.
+                            let duration =
+                                audio::duration(&playback::Media::Remote(stream.clone()))
+                                    .await
+                                    .ok();
+                            playback::download(
+                                config,
+                                playback::DownloadRequest {
+                                    id: request_id,
+                                    stream,
+                                    anime,
+                                    episode,
+                                    audio,
+                                    duration,
+                                },
+                                tx.clone(),
+                            )
+                            .await
                         }
                         .await;
                         diagnostic.finish(&result);
                         let result = result.map_err(|e| format!("{e:#}"));
-                        let _ = tx.send(Message::DownloadEnded(result));
+                        let _ = tx.send(Message::DownloadEnded { request_id, result });
                     }));
                 }
                 Action::Sync => {
@@ -1134,6 +1208,45 @@ mod tests {
                 .is_none()
         );
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn download_audio_choice_uses_the_same_prompt_semantics() -> Result<()> {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let tracks = anime_levisione_core::audio::hls_tracks("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"ita\"\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"eng\"\n").expect("tracks");
+        let task = tokio::spawn(async move { choose_download_audio(9, tracks, &tx).await });
+        match rx.recv().await.expect("download audio prompt") {
+            Message::ChooseDownloadAudio {
+                request_id,
+                tracks,
+                reply,
+            } => {
+                assert_eq!(request_id, 9);
+                reply.send(Some(tracks[0].clone())).expect("confirm");
+            }
+            _ => panic!("expected download audio prompt"),
+        }
+        assert_eq!(
+            task.await
+                .expect("task")
+                .expect("audio")
+                .expect("choice")
+                .language
+                .as_deref(),
+            Some("ita")
+        );
+        // A single language never prompts; closing the UI cancels the download.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let single = anime_levisione_core::audio::hls_tracks(
+            "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"ita\"",
+        )
+        .expect("tracks");
+        assert!(choose_download_audio(9, single, &tx).await?.is_none());
+        let tracks = anime_levisione_core::audio::hls_tracks("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"ita\"\n#EXT-X-MEDIA:TYPE=AUDIO,LANGUAGE=\"eng\"\n").expect("tracks");
+        let task = tokio::spawn(async move { choose_download_audio(10, tracks, &tx).await });
+        drop(rx.recv().await);
+        assert!(task.await.expect("task").is_err());
+        Ok(())
     }
 
     #[tokio::test]

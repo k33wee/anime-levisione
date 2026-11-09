@@ -126,7 +126,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let layout = pane_layout(
         frame.area(),
         app.pane(),
-        u16::from(app.playing) + u16::from(app.downloading),
+        u16::from(app.playing)
+            + u16::from(app.downloading)
+            + u16::from(app.downloading && !app.download_target.is_empty()),
     );
     app.pane_regions.clear();
     app.audio_rows.clear();
@@ -638,10 +640,21 @@ fn log(frame: &mut Frame, app: &App, area: Rect) {
         ]));
     }
     if app.downloading {
+        let progress = if app.download_progress.is_empty() {
+            "resolving…".to_string()
+        } else {
+            app.download_progress.clone()
+        };
         lines.push(Line::from(vec![
             accent(format!("{} Downloading: ", SPINNER[app.tick / 3 % 4])),
-            Span::raw(app.download_label.clone()),
+            Span::raw(format!("{} · {progress}", app.download_label)),
         ]));
+        if !app.download_target.is_empty() {
+            lines.push(Line::from(vec![
+                dim("→ "),
+                dim(app.download_target.clone()),
+            ]));
+        }
     }
     frame.render_widget(
         Paragraph::new(lines)
@@ -695,6 +708,10 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
         height,
     );
     frame.render_widget(Clear, area);
+    let audio_for_download = app
+        .audio_prompt
+        .as_ref()
+        .is_some_and(|prompt| prompt.for_download);
     let title = match modal {
         Modal::Help => "Keybindings & about · Esc to close",
         Modal::Commands => "Commands · type to filter · Esc to close",
@@ -703,6 +720,9 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
         Modal::Login => "Personal Telegram bot · Tab field · Enter connect · Esc cancel",
         Modal::ConnectionKey => "Secret connection key · Esc close and hide",
         Modal::Quit => "Quit anime-levisione?",
+        Modal::Audio if audio_for_download => {
+            "Choose download audio · ↑/↓ select · Enter download · Esc cancel"
+        }
         Modal::Audio => "Choose audio language · ↑/↓ select · Enter play · Esc cancel",
     };
     let block = panel(title, true);
@@ -710,7 +730,12 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
     frame.render_widget(block, area);
     if modal == Modal::Audio {
         let rows = Layout::vertical([C::Length(1), C::Min(0), C::Length(1)]).split(inner);
-        frame.render_widget(Paragraph::new(app.playback_label.clone()), rows[0]);
+        let header = if audio_for_download {
+            format!("{} · saving to {}", app.download_label, app.download_target)
+        } else {
+            app.playback_label.clone()
+        };
+        frame.render_widget(Paragraph::new(header), rows[0]);
         if let Some(prompt) = app.audio_prompt.as_mut() {
             let items = prompt
                 .tracks
@@ -744,8 +769,12 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
             }
         }
         frame.render_widget(
-            Paragraph::new("Enter: play · Esc: cancel · Click/wheel: select")
-                .style(Style::default().fg(ACCENT)),
+            Paragraph::new(if audio_for_download {
+                "Enter: download · Esc: cancel · Click/wheel: select"
+            } else {
+                "Enter: play · Esc: cancel · Click/wheel: select"
+            })
+            .style(Style::default().fg(ACCENT)),
             rows[2],
         );
         return;
@@ -886,7 +915,7 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
             "  w            Toggle watchlist",
             "  m            Mark episode watched / unwatched",
             "  s / n / N    Restart selected / next / previous episode",
-            "  d            Download via ffmpeg (direct files and HLS)",
+            "  d            Download: pick language, see path & progress",
             "  Ctrl+x / Ctrl+d   Stop player / cancel download",
             "  f            Filter episodes   Esc clears the filter",
             "  p / a        Cycle provider / subtitle-dub filter",
@@ -937,7 +966,7 @@ fn popup(frame: &mut Frame, app: &mut App, modal: Modal) {
             Line::from(""),
             Line::from("mpv: automatic resume and watched tracking (macOS/Linux/WSL)."),
             Line::from("VLC: playback/resume; use m to mark completion manually."),
-            Line::from("ffmpeg: downloads; ffprobe: optional file audio-language detection."),
+            Line::from("ffmpeg: downloads; ffprobe: optional audio languages and size estimate."),
             Line::from("Player args are passed literally, never through a shell."),
             Line::from(""),
             Line::from(dim(
@@ -1031,6 +1060,51 @@ mod tests {
         let mut app = App::new(Config::default(), Library::default(), "test".into(), true);
         crate::demo::populate(&mut app);
         app
+    }
+
+    fn rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn active_download_shows_progress_destination_and_picker() -> anyhow::Result<()> {
+        let mut app = demo_app();
+        app.downloading = true;
+        app.download_label = "Orbit Garden · Ep 2".into();
+        app.download_target = "/home/user/Videos/Anime/Orbit Garden [AU-42]/Episode 2.mkv".into();
+        app.download_progress = "10.0 MiB / ~40.0 MiB · 25% · 2.0 MiB/s".into();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40))?;
+        terminal.draw(|f| draw(f, &mut app))?;
+        let text = rows(&terminal).join("\n");
+        assert!(
+            text.contains(
+                "Downloading: Orbit Garden · Ep 2 · 10.0 MiB / ~40.0 MiB · 25% · 2.0 MiB/s"
+            )
+        );
+        assert!(text.contains("Episode 2.mkv"), "destination is visible");
+        // The download audio picker names its purpose and the save location.
+        let tracks = anime_levisione_core::audio::hls_tracks(
+            "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,NAME=\"Italian\",LANGUAGE=\"ita\",DEFAULT=YES\n#EXT-X-MEDIA:TYPE=AUDIO,NAME=\"English\",LANGUAGE=\"eng\"",
+        )?;
+        let (reply, _pending) = tokio::sync::oneshot::channel();
+        app.message(crate::events::Message::ChooseDownloadAudio {
+            request_id: app.download_id,
+            tracks,
+            reply,
+        });
+        terminal.draw(|f| draw(f, &mut app))?;
+        let text = rows(&terminal).join("\n");
+        assert!(text.contains("Choose download audio"));
+        assert!(text.contains("saving to"));
+        assert!(text.contains("Enter: download"));
+        Ok(())
     }
 
     #[test]

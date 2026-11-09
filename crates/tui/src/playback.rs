@@ -10,15 +10,16 @@ use anime_levisione_core::{
     store::Config,
 };
 use anyhow::{Context, Result, bail};
-#[cfg(unix)]
-use std::time::Duration;
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
+    time::Duration,
 };
-#[cfg(unix)]
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::{io::AsyncRead, process::Command, sync::mpsc};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncRead, BufReader},
+    process::Command,
+    sync::mpsc,
+};
 
 // Re-exported so player-side code can keep using `playback::Media`.
 pub use anime_levisione_core::provider::Media;
@@ -309,66 +310,254 @@ pub fn safe_name(value: &str) -> String {
         value.into()
     }
 }
-pub async fn download(
-    config: Config,
-    stream: Stream,
-    anime: Anime,
-    episode: Episode,
-) -> Result<String> {
-    let directory = config.download_dir.join(format!(
+/// Directory every episode of a title is downloaded into, under the configured
+/// download directory. Shared with the UI so the target can be shown before
+/// ffmpeg starts.
+pub fn download_directory(config: &Config, anime: &Anime) -> PathBuf {
+    config.download_dir.join(format!(
         "{} [{}-{}]",
         safe_name(&anime.title),
         anime.provider.short(),
         safe_name(&anime.id)
+    ))
+}
+/// Final file an episode download is saved to.
+pub fn destination(config: &Config, anime: &Anime, episode: &Episode) -> PathBuf {
+    download_directory(config, anime).join(format!("Episode {}.mkv", safe_name(&episode.number)))
+}
+
+pub struct DownloadRequest {
+    pub id: u64,
+    pub stream: Stream,
+    pub anime: Anime,
+    pub episode: Episode,
+    /// Chosen audio track: its language tag (preferred) or ordinal selects the
+    /// ffmpeg audio mapping. `None` keeps every audio stream.
+    pub audio: Option<AudioTrack>,
+    /// Best-effort media duration used to estimate the final file size.
+    pub duration: Option<f64>,
+}
+
+/// ffmpeg `-map` selector for the chosen audio: by language metadata when the
+/// track has one (VLC/mpv-compatible normalized code), else by audio ordinal.
+fn audio_map(track: &AudioTrack) -> String {
+    match &track.language {
+        Some(language) => format!("0:a:m:language:{language}"),
+        None => format!("0:a:{}", track.index),
+    }
+}
+
+fn ffmpeg_args(stream: &Stream, audio_selector: &str, output: &Path) -> Vec<String> {
+    vec![
+        "-nostdin".into(),
+        "-hide_banner".into(),
+        "-loglevel".into(),
+        "error".into(),
+        "-nostats".into(),
+        "-progress".into(),
+        "pipe:1".into(),
+        "-y".into(),
+        "-user_agent".into(),
+        USER_AGENT.into(),
+        "-referer".into(),
+        stream.referer.clone(),
+        "-i".into(),
+        stream.url.to_string(),
+        "-map".into(),
+        "0:v?".into(),
+        "-map".into(),
+        audio_selector.into(),
+        "-map".into(),
+        "0:s?".into(),
+        "-c".into(),
+        "copy".into(),
+        output.display().to_string(),
+    ]
+}
+
+/// One ffmpeg run. Reports size/speed/estimate through the message channel
+/// at most twice a second; returns (success, stderr tail).
+async fn run_ffmpeg(
+    args: &[String],
+    request_id: u64,
+    duration: Option<f64>,
+    tx: &mpsc::UnboundedSender<Message>,
+) -> Result<(bool, String)> {
+    let mut child = Command::new("ffmpeg")
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .args(args)
+        .spawn()
+        .context("Cannot start ffmpeg; install it to download episodes")?;
+    let tail = tokio::spawn(diagnostic_tail(
+        child.stderr.take().context("ffmpeg stderr unavailable")?,
     ));
+    let progress = tokio::spawn(report_progress(
+        child
+            .stdout
+            .take()
+            .context("ffmpeg progress pipe unavailable")?,
+        request_id,
+        duration,
+        tx.clone(),
+    ));
+    let status = child.wait().await?;
+    let _ = progress.await;
+    let tail = tail.await.unwrap_or_default();
+    Ok((status.success(), tail))
+}
+
+/// Estimated final size: observed bytes scaled by the media duration over
+/// the already-processed seconds. Returns `None` without a usable duration,
+/// and only after enough media has been processed for a sane extrapolation
+/// (early samples are mostly container headers and skew the total).
+fn size_estimate(bytes: u64, done_seconds: Option<f64>, duration: Option<f64>) -> Option<u64> {
+    duration
+        .filter(|total| *total > 0.0)
+        .zip(done_seconds)
+        .and_then(|(total, done)| {
+            (done >= 5.0).then(|| (bytes as f64 * total / done).round() as u64)
+        })
+}
+
+/// Parse ffmpeg `-progress pipe:1` reports and forward them as messages.
+/// Each block ends with a `progress=` key, so reports are emitted once per
+/// complete block (all fields present) and at most ~2.5 times a second.
+async fn report_progress<R: AsyncRead + Unpin>(
+    pipe: R,
+    request_id: u64,
+    duration: Option<f64>,
+    tx: mpsc::UnboundedSender<Message>,
+) {
+    let mut lines = BufReader::new(pipe).lines();
+    let mut bytes: Option<u64> = None;
+    let mut done_seconds: Option<f64> = None;
+    let mut last_sample: Option<(std::time::Instant, u64)> = None;
+    let mut last_sent: Option<std::time::Instant> = None;
+    while let Ok(Some(line)) = lines.next_line().await {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key {
+            "total_size" => bytes = value.parse().ok(),
+            "out_time_us" => done_seconds = value.parse::<f64>().ok().map(|us| us / 1_000_000.0),
+            "progress" => {
+                let end = value == "end";
+                // The final block always reports so the last byte count lands.
+                if (end || last_sent.is_none_or(|at| at.elapsed() >= Duration::from_millis(400)))
+                    && let Some(bytes) = bytes
+                {
+                    let speed = last_sample.map(|(at, previous)| {
+                        let elapsed = at.elapsed().as_secs_f64();
+                        if elapsed > 0.0 {
+                            ((bytes.saturating_sub(previous)) as f64 / elapsed) as u64
+                        } else {
+                            0
+                        }
+                    });
+                    last_sample = Some((std::time::Instant::now(), bytes));
+                    let _ = tx.send(Message::DownloadProgress {
+                        request_id,
+                        bytes,
+                        total: size_estimate(bytes, done_seconds, duration),
+                        speed: speed.filter(|speed| *speed > 0),
+                    });
+                    last_sent = Some(std::time::Instant::now());
+                }
+                if end {
+                    break;
+                }
+            }
+            _ => continue,
+        }
+    }
+}
+
+pub async fn download(
+    config: Config,
+    request: DownloadRequest,
+    tx: mpsc::UnboundedSender<Message>,
+) -> Result<String> {
+    let DownloadRequest {
+        id,
+        stream,
+        anime,
+        episode,
+        audio,
+        duration,
+    } = request;
+    let destination = destination(&config, &anime, &episode);
+    let directory = download_directory(&config, &anime);
     tokio::fs::create_dir_all(&directory).await?;
-    let name = format!("Episode {}.mkv", safe_name(&episode.number));
-    let destination = directory.join(&name);
-    let manifest_path = destination.with_extension("json");
     if destination.exists() {
         bail!("Already downloaded: {}", destination.display());
     }
     // ffmpeg handles both direct files and HLS correctly; never save a playlist as .mp4.
-    let temporary = tempfile::Builder::new()
+    let mut temporary = tempfile::Builder::new()
         .prefix(".")
         .suffix(".part.mkv")
         .tempfile_in(&directory)?;
-    let output = Command::new("ffmpeg")
-        .kill_on_drop(true)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .args([
-            "-nostdin",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-user_agent",
-            USER_AGENT,
-            "-referer",
-            &stream.referer,
-            "-i",
-            stream.url.as_str(),
-            "-map",
-            "0:v?",
-            "-map",
-            "0:a?",
-            "-map",
-            "0:s?",
-            "-c",
-            "copy",
-        ])
-        .arg(temporary.path())
-        .spawn()
-        .context("Cannot start ffmpeg; install it to download episodes")?;
-    let mut child = output;
-    let diagnostic = tokio::spawn(diagnostic_tail(
-        child.stderr.take().context("ffmpeg stderr unavailable")?,
-    ));
-    let status = child.wait().await?;
-    let tail = diagnostic.await.unwrap_or_default();
-    if !status.success() {
+    // Selector escalation: the chosen mapping first, then the audio ordinal
+    // (probe and ffmpeg stream numbering can drift on HLS masters), then every
+    // audio stream. The user is told whenever the explicit choice is dropped.
+    let mut selectors = vec![
+        audio
+            .as_ref()
+            .map(audio_map)
+            .unwrap_or_else(|| "0:a?".into()),
+    ];
+    if let Some(track) = &audio
+        && track.language.is_some()
+        && !selectors
+            .iter()
+            .any(|s| *s == format!("0:a:{}", track.index))
+    {
+        selectors.push(format!("0:a:{}", track.index));
+    }
+    if selectors.last() != Some(&"0:a?".to_string()) {
+        selectors.push("0:a?".into());
+    }
+    let mut result = None;
+    for (attempt, selector) in selectors.iter().enumerate() {
+        if attempt > 0 {
+            let _ = tx.send(Message::Notice {
+                text: format!(
+                    "Audio track not found in the stream; retrying download with {}",
+                    if selector == "0:a?" {
+                        "all audio languages".to_string()
+                    } else {
+                        format!("audio track {selector}")
+                    }
+                ),
+                error: true,
+            });
+            temporary = tempfile::Builder::new()
+                .prefix(".")
+                .suffix(".part.mkv")
+                .tempfile_in(&directory)?;
+        }
+        result = Some(
+            run_ffmpeg(
+                &ffmpeg_args(&stream, selector, temporary.path()),
+                id,
+                duration,
+                &tx,
+            )
+            .await,
+        );
+        let stop = match &result {
+            Some(Ok((_, tail))) => !tail.contains("matches no streams"),
+            Some(Err(_)) => true,
+            None => true,
+        };
+        if stop {
+            break;
+        }
+    }
+    let (success, tail) = result.expect("at least one ffmpeg attempt")?;
+    if !success {
         bail!("Download failed: {tail}");
     }
     if temporary.as_file().metadata()?.len() == 0 {
@@ -378,10 +567,14 @@ pub async fn download(
     let manifest = DownloadManifest {
         anime,
         episode,
-        file: name,
+        file: destination
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string(),
     };
     anime_levisione_core::store::atomic_write(
-        &manifest_path,
+        &destination.with_extension("json"),
         &serde_json::to_vec_pretty(&manifest)?,
     )?;
     temporary
@@ -594,6 +787,122 @@ mod tests {
         assert_eq!(safe_name("../../evil/name\n"), "_.._evil_name_");
         assert_eq!(safe_name("..."), "anime");
         assert!(!safe_name("a/b\\c").contains('/'));
+    }
+
+    #[test]
+    fn download_destination_lives_under_the_configured_directory() {
+        let config = Config::default();
+        let anime = serde_json::from_value(serde_json::json!({
+            "provider": "animeworld", "id": "op", "title": "One Piece",
+        }))
+        .expect("anime");
+        let episode = Episode {
+            id: "9".into(),
+            number: "12.5".into(),
+            title: String::new(),
+        };
+        let target = destination(&config, &anime, &episode);
+        assert_eq!(
+            target,
+            config
+                .download_dir
+                .join("One Piece [AW-op]")
+                .join("Episode 12.5.mkv")
+        );
+    }
+
+    fn download_request(audio: Option<AudioTrack>) -> DownloadRequest {
+        DownloadRequest {
+            id: 4,
+            stream: Stream {
+                url: "https://cdn.example/playlist/42?token=signed"
+                    .parse()
+                    .expect("url"),
+                referer: "https://player.example/embed/42".into(),
+            },
+            anime: serde_json::from_value(serde_json::json!({
+                "provider": "streamingcommunity", "id": "42-test", "title": "Test",
+            }))
+            .expect("anime"),
+            episode: Episode {
+                id: "9".into(),
+                number: "3".into(),
+                title: String::new(),
+            },
+            audio,
+            duration: Some(1440.0),
+        }
+    }
+
+    #[test]
+    fn chosen_audio_selects_the_ffmpeg_stream_by_language_or_ordinal() {
+        let request = download_request(Some(english()));
+        let args = ffmpeg_args(
+            &request.stream,
+            &audio_map(request.audio.as_ref().expect("track")),
+            Path::new("/tmp/out.mkv"),
+        );
+        let join = |args: &[String]| args.join(" ");
+        assert!(join(&args).contains("-map 0:v? -map 0:a:m:language:eng -map 0:s?"));
+        assert!(join(&args).contains("-progress pipe:1"));
+        assert!(join(&args).contains("-nostats"));
+        assert!(join(&args).ends_with("/tmp/out.mkv"));
+        let unknown = AudioTrack {
+            language: None,
+            ..english()
+        };
+        assert_eq!(audio_map(&unknown), "0:a:1");
+    }
+
+    #[test]
+    fn size_estimates_need_a_duration_and_processed_time() {
+        assert_eq!(size_estimate(50, Some(5.0), Some(20.0)), Some(200));
+        assert_eq!(size_estimate(50, Some(5.0), None), None);
+        assert_eq!(size_estimate(50, None, Some(20.0)), None);
+        // Early samples are mostly headers: no extrapolation before ~5 s.
+        assert_eq!(size_estimate(50, Some(4.9), Some(20.0)), None);
+        assert_eq!(size_estimate(50, Some(0.5), Some(20.0)), None);
+        assert_eq!(size_estimate(50, Some(5.0), Some(0.0)), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ffmpeg_progress_reports_are_parsed_and_rate_limited() -> Result<()> {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let script = "printf 'frame=1\ntotal_size=1200000\nout_time_us=6000000\nprogress=continue\nframe=2\ntotal_size=1400000\nout_time_us=7000000\nprogress=end\n'";
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command
+            .args(["-c", script])
+            .kill_on_drop(true)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = command.spawn()?;
+        let stdout = child.stdout.take().expect("stdout");
+        report_progress(stdout, 4, Some(10.0), tx).await;
+        let _ = child.wait().await;
+        let first = rx.try_recv().expect("first block sends immediately");
+        assert!(matches!(
+            first,
+            Message::DownloadProgress {
+                request_id: 4,
+                bytes: 1_200_000,
+                total: Some(2_000_000),
+                speed: None,
+            }
+        ));
+        // The final block bypasses the throttle so the last size always lands.
+        let final_report = rx.try_recv().expect("final block reports");
+        assert!(matches!(
+            final_report,
+            Message::DownloadProgress {
+                request_id: 4,
+                bytes: 1_400_000,
+                total: Some(2_000_000),
+                speed: _,
+            }
+        ));
+        assert!(rx.try_recv().is_err(), "nothing after the final block");
+        Ok(())
     }
     #[test]
     fn missing_offline_folder_is_empty() -> Result<()> {
