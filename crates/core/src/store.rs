@@ -46,7 +46,7 @@ impl Default for Config {
             animeworld_domains: vec![],
             animeunity_url: "https://www.animeunity.to".into(),
             animeunity_domains: vec![],
-            streamingcommunity_url: "https://streamingcommunityz.day".into(),
+            streamingcommunity_url: "https://streamingcommunityz.nexus".into(),
             streamingcommunity_domains: vec![],
             private: false,
         }

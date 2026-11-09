@@ -32,16 +32,18 @@ const ANIMEWORLD_DOMAINS: &[&str] = &[
     "https://www.animeworld.tv",
 ];
 /// Known StreamingCommunity domains, most recent first. This provider rotates
-/// even faster than the anime sites.
+/// even faster than the anime sites; the `streamingcommunityz.*` names
+/// currently redirect to the live domain, which is also probed directly.
 const STREAMINGCOMMUNITY_DOMAINS: &[&str] = &[
+    "https://streamingcommunityz.nexus",
     "https://streamingcommunityz.day",
     "https://streamingcommunityz.build",
+    "https://streamingcommunity.co.uk",
     "https://streamingcommunity.to",
     "https://streamingcommunity.net",
     "https://streamingcommunity.xyz",
     "https://streamingcommunity.bond",
     "https://streamingcommunity.cafe",
-    "https://streamingcommunity.co.uk",
 ];
 
 /// The primary candidate gets a head start so healthy setups never touch mirrors.
