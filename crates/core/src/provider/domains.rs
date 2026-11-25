@@ -20,6 +20,7 @@ use url::Url;
 
 /// Known AnimeUnity domains, most recent first.
 const ANIMEUNITY_DOMAINS: &[&str] = &[
+    "https://animeunity.cx",
     "https://www.animeunity.to",
     "https://www.animeunity.co",
     "https://www.animeunity.so",
@@ -35,6 +36,7 @@ const ANIMEWORLD_DOMAINS: &[&str] = &[
 /// even faster than the anime sites; the `streamingcommunityz.*` names
 /// currently redirect to the live domain, which is also probed directly.
 const STREAMINGCOMMUNITY_DOMAINS: &[&str] = &[
+    "https://streamingcommunityz.mov",
     "https://streamingcommunityz.nexus",
     "https://streamingcommunityz.day",
     "https://streamingcommunityz.build",
